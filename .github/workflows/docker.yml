@@ -97,7 +97,10 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
             type=sha,format=long
-            type=sha,format=short,prefix=-
+            # 前缀必须是字母：Docker tag 不允许以 - 或 . 开头，
+            # 写成 prefix=- 会产出 "-e7d9925" 并让 buildx 报
+            # invalid reference format。
+            type=sha,format=short,prefix=sha-
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
