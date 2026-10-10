@@ -4,7 +4,9 @@
 
 所有录音和播放都在浏览器里完成，**API Key 只存在于服务端**。
 
-![四个页签](https://img.shields.io/badge/tabs-4-6c8cff) ![Python](https://img.shields.io/badge/python-3.12-3572A5) ![License](https://img.shields.io/badge/license-MIT-blue)
+![四个页签](https://img.shields.io/badge/tabs-4-6c8cff) ![Python](https://img.shields.io/badge/python-3.12-3572A5) ![License](https://img.shields.io/badge/license-MIT-blue) [![GHCR](https://img.shields.io/badge/image-ghcr.io/hbpc002/speech-workbench-2496ed)](https://github.com/hbpc002/speech-workbench/pkgs/container/speech-workbench)
+
+**[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hbpc002/speech-workbench) [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/hbpc002/speech-workbench) [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new?repo=https://github.com/hbpc002/speech-workbench)**
 
 ---
 
@@ -45,15 +47,32 @@ cp .env.example .env      # 填入 DASHSCOPE_API_KEY
 
 ## 部署
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hbpc002/speech-workbench)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/hbpc002/speech-workbench)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new?repo=https://github.com/hbpc002/speech-workbench)
+
+点按钮后只需填 `DASHSCOPE_API_KEY`，平台会自动读仓库里的 `render.yaml` / `vercel.json` 完成其余配置。
+
+<details>
+<summary>Docker / 自有服务器</summary>
+
 ```bash
-# Render
+# 用 CI 自动构建的镜像
+docker pull ghcr.io/hbpc002/speech-workbench:latest
+
+# 或本地构建
 docker build -t speech-workbench .
+
 docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 ```
 
-或用内置的 `render.yaml` / `vercel.json`，详见 [`README.md`](docs/技术说明.md#部署)。
+镜像随每次推送到 `main` 自动更新，多架构支持见 [`docs/技术说明.md`](docs/技术说明.md#自动构建镜像github-actions)。
+</details>
 
-**声音复刻需要公网地址** —— 复刻接口要求阿里云从公网下载样本音频，`localhost` 不可用。
+> [!IMPORTANT]
+> **声音复刻需要公网 HTTPS 地址**，且部署后要手动把 `PUBLIC_BASE_URL` 填成实际域名（如 `https://speech-workbench.onrender.com`）。不填的话四个页签里只有「声音复刻」会失败 —— 复刻接口要求阿里云从公网下载样本音频，`localhost` 拿不到。
+
+部署细节（Render 免费版 5GB/月带宽、Vercel 区域选择等）见 [`docs/技术说明.md`](docs/技术说明.md#部署)。
 
 ---
 
@@ -61,7 +80,7 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 
 - [`使用说明.md`](使用说明.md) —— 完整操作手册，含常见问题
 - [`口播稿提示词.md`](口播稿提示词.md) —— 可直接复制给 AI 的口播稿生成提示词
-- [`README.md`](README.md) —— 部署、架构、与上游示例的差异
+- [`docs/技术说明.md`](docs/技术说明.md) —— 部署、架构、自动构建、与上游示例的差异
 
 ---
 
