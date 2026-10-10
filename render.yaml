@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: speech-workbench
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    envVars:
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: DASHSCOPE_WORKSPACE_ID
+        sync: false
+      - key: FUN_REALTIME_SPACE_ID
+        sync: false
+      - key: APP_PASSWORD
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      # Must be the deployed origin, e.g. https://speech-workbench.onrender.com
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: STORAGE_BACKEND
+        value: local

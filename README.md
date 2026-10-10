@@ -1,0 +1,100 @@
+# 语音工坊 Speech Workbench
+
+把[阿里云百炼语音示例](https://github.com/aliyun/alibabacloud-bailian-speech-demo)的核心能力整合成一个 Web 应用，补上声音复刻与音色管理，支持 Docker / Vercel / Render 部署。
+
+所有录音和播放都在浏览器里完成，**API Key 只存在于服务端**。
+
+![四个页签](https://img.shields.io/badge/tabs-4-6c8cff) ![Python](https://img.shields.io/badge/python-3.12-3572A5) ![License](https://img.shields.io/badge/license-MIT-blue)
+
+---
+
+## 功能
+
+| 页签 | 能力 | 状态 |
+|---|---|---|
+| 实时语音对话 | 端到端语音对话，可打断，断线后自动恢复上下文 | ✅ 实测 |
+| 实时语音识别 | 麦克风转字幕，流式增量 | ✅ 实测 |
+| 语音合成 | **6 个模型 / 253 个音色**，语速音调音量可调，情感与场景指令，**情感标签**，历史记录 | ✅ 实测 |
+| 声音复刻 | 录音或上传样本复刻音色，支持试音/下载/删除 | 需公网 HTTPS |
+
+### 语音合成
+
+- **253 个音色**分场景分组，带指令能力的音色在下拉里带角标
+- **情感标签**（仅 qwen 系列）：`[excited]` `[whispers]` `[laughing]` `[cough]` … 共 30 个，直接写在文本里，且**跨句自动继承**
+- **指令**：情感 / 场景 / 角色 / 身份 / 方言，qwen 系列还支持自由风格自然语言指令
+- **历史记录**：每次生成新增一条，可按句重生成，下载时仍是完整音频；IndexedDB 持久化，刷新不丢
+
+音色和模型强绑定，换模型必须同步换音色。完整的模型/音色/指令能力矩阵见 [`使用说明.md`](使用说明.md)。
+
+---
+
+## 快速开始
+
+```bash
+git clone <this-repo>
+cd speech-workbench
+python3 -m venv .venv && .venv/bin/pip install -e .
+
+cp .env.example .env      # 填入 DASHSCOPE_API_KEY
+.venv/bin/uvicorn server.main:app --port 8080
+```
+
+打开 http://localhost:8080
+
+需要 [阿里云账号](https://help.aliyun.com/zh/account/user-guide/ali-cloud-account-registration-process)并开通[百炼模型服务](https://help.aliyun.com/zh/model-studio/getting-started/activate-alibaba-cloud-model-studio)（有免费额度），然后在[API-KEY 管理](https://help.aliyun.com/zh/model-studio/user-guide/api-key-management)创建密钥。
+
+## 部署
+
+```bash
+# Render
+docker build -t speech-workbench .
+docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
+```
+
+或用内置的 `render.yaml` / `vercel.json`，详见 [`README.md`](docs/技术说明.md#部署)。
+
+**声音复刻需要公网地址** —— 复刻接口要求阿里云从公网下载样本音频，`localhost` 不可用。
+
+---
+
+## 文档
+
+- [`使用说明.md`](使用说明.md) —— 完整操作手册，含常见问题
+- [`口播稿提示词.md`](口播稿提示词.md) —— 可直接复制给 AI 的口播稿生成提示词
+- [`README.md`](README.md) —— 部署、架构、与上游示例的差异
+
+---
+
+## 与上游示例的关系
+
+代码从 [aliyun/alibabacloud-bailian-speech-demo](https://github.com/aliyun/alibabacloud-bailian-speech-demo) 的示例改写而来，主要来源：
+
+| 能力 | 上游路径 |
+|---|---|
+| 实时语音对话 | `samples/conversation/fun-audiochat-realtime/demo_app/web/` |
+| 实时语音识别 | `samples/gallery/input-audio-out-text-html/python/server.py` |
+| 语音合成 | `samples/gallery/cosyvoice-js/` |
+| 声音复刻 | `samples/speech-synthesizer/synthesize_speech_from_text_with_cloned_voice/` |
+| 录音 AudioWorklet | `samples/gallery/paraformer-realtime-js/recorder_worklet.js` |
+
+做了这些改动：
+
+- **所有音频 I/O 移到浏览器**。上游约 15 个示例依赖 `pyaudio` / `javax.sound.sampled` / `wxPython`，在无音频设备的容器里无法运行。
+- **API Key 只在服务端**，浏览器拿不到（上游部分 JS 示例把 Key 拼在 URL 里）。
+- **声音复刻免 OSS**：应用用自己的公网地址托管样本，不再需要手动上传 OSS 换 URL。
+- **音色目录与指令能力表全部实测**，而非照抄官方文档 —— 官方表格有多处与实际不符（详见 `使用说明.md`）。
+
+## 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `DASHSCOPE_API_KEY` | 必填 |
+| `APP_PASSWORD` | 访问密码，留空关闭鉴权 |
+| `SESSION_SECRET` | 签名会话 Cookie |
+| `PUBLIC_BASE_URL` | 部署后的公网地址，声音复刻必填 |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob，Vercel 部署时需要 |
+| `DASHSCOPE_WORKSPACE_ID` | 可选，工作空间专属模型才需要 |
+
+## License
+
+MIT
