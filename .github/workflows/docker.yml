@@ -74,6 +74,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 深克隆：metadata-action 靠 git tag 识别 semver，
+          # 默认的 fetch-depth: 1 浅克隆里没有 tag，语义化标签会全部失效。
+          fetch-depth: 0
 
       - name: 登录 GHCR
         uses: docker/login-action@v3
@@ -120,6 +124,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
@@ -158,6 +164,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 登录阿里云容器镜像服务
         uses: docker/login-action@v3
