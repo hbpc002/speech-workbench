@@ -111,11 +111,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # 配好 secrets 后自动启用：DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+  # 开关是仓库变量 ENABLE_DOCKERHUB=true（Settings → Secrets and variables
+  # → Actions → Variables）。job 级 if 不支持 secrets 上下文。
   dockerhub:
     name: 推送到 Docker Hub
     needs: build
-    if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+    if: ${{ vars.ENABLE_DOCKERHUB == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -149,11 +150,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # 配好 secrets 后自动启用：ACR_USERNAME / ACR_PASSWORD / ACR_IMAGE
+  # 开关是仓库变量 ENABLE_ACR=true
   aliyun:
     name: 推送到阿里云 ACR
     needs: build
-    if: ${{ secrets.ACR_USERNAME != '' }}
+    if: ${{ vars.ENABLE_ACR == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
