@@ -1,0 +1,189 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  ACR_REGISTRY: registry.cn-hangzhou.aliyuncs.com
+
+jobs:
+  test:
+    name: 冒烟测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -e .
+
+      - name: 无密钥也能导入并启动
+        env:
+          DASHSCOPE_API_KEY: ""
+        run: |
+          python - <<'PY'
+          from server.main import app
+          from server import config
+
+          def walk(routes):
+              for r in routes:
+                  p = getattr(r, "path", None)
+                  if p:
+                      yield p
+                  yield from walk(getattr(r, "routes", None) or [])
+
+          paths = set(walk(app.routes))
+          need = {"/ws/chat", "/ws/asr", "/ws/tts", "/healthz", "/api/config"}
+          missing = need - paths
+          assert not missing, f"缺少路由: {missing}"
+          print(f"  路由齐全，共 {len(paths)} 条")
+
+          # 目录数据要能序列化给浏览器
+          cfg = config.public_config()
+          total = sum(len(m.get("voices", [])) for m in cfg["tts_models"])
+          assert total > 100, f"音色目录异常，只有 {total} 个"
+          print(f"  音色目录 {total} 个 / {len(cfg['tts_models'])} 个模型")
+
+          # 密钥绝不能出现在给浏览器的配置里
+          assert "sk-" not in repr(cfg), "public_config 泄漏了密钥"
+          assert not config.API_KEY, "未设密钥时应为空"
+          print("  密钥隔离正常")
+          PY
+
+  build:
+    name: 构建并推送镜像
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 生成标签与摘要
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=sha,format=long
+            type=sha,format=short,prefix=-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送到 GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 配好 secrets 后自动启用：DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+  dockerhub:
+    name: 推送到 Docker Hub
+    needs: build
+    if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/speech-workbench
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 配好 secrets 后自动启用：ACR_USERNAME / ACR_PASSWORD / ACR_IMAGE
+  aliyun:
+    name: 推送到阿里云 ACR
+    needs: build
+    if: ${{ secrets.ACR_USERNAME != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录阿里云容器镜像服务
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ACR_REGISTRY }}/${{ secrets.ACR_IMAGE }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
