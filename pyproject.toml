@@ -13,7 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only needed when deploying to Vercel, where enrollment clips go to Blob.
-vercel = ["vercel-blob>=0.27"]
+# Latest release is 0.4.2; there is no 0.27.x — the series runs 0.2 -> 0.3 -> 0.4.
+vercel = ["vercel-blob>=0.4.2"]
 
 [tool.vercel]
 # Vercel 要求 module:variable 格式，不是文件路径。

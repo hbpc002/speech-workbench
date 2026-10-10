@@ -71,12 +71,14 @@ async def _put_blob(wav_bytes: bytes, suffix: str) -> str:
         ) from exc
 
     name = uuid.uuid4().hex + suffix
-    return blob_put(
-        name,
-        wav_bytes,
-        access="public",
-        token=config.BLOB_TOKEN,
-    )
+    # vercel-blob >= 0.4: put(path, data, options) — token and addRandomSuffix
+    # live inside `options`, and `access` no longer exists (blobs are public).
+    # It returns the API response dict, not the URL.
+    response = blob_put(name, wav_bytes, options={"token": config.BLOB_TOKEN})
+    url = response.get("url") if isinstance(response, dict) else response
+    if not url:
+        raise RuntimeError(f"vercel-blob did not return a url: {response!r}")
+    return url
 
 
 def read_local(name: str) -> bytes | None:
