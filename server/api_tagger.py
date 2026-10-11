@@ -22,7 +22,7 @@ class TagRequest(BaseModel):
     text: str = ""
     model: str = ""
     density: str = ""
-    allow_rich: bool = False
+    rich_level: str = ""
 
 
 class ScriptRequest(BaseModel):
@@ -32,7 +32,7 @@ class ScriptRequest(BaseModel):
     audience: str = ""
     model: str = ""
     density: str = ""
-    allow_rich: bool = False
+    rich_level: str = ""
 
 
 def _start(request: Request) -> str:
@@ -72,18 +72,29 @@ def _check_density(density: str) -> str:
     return density
 
 
+def _check_rich_level(level: str) -> str:
+    level = (level or "").strip()
+    if not level:
+        return config.TAGS_DEFAULT_RICH_LEVEL
+    if level not in tagger.rich_level_ids():
+        known = "、".join(item["name"] for item in config.TAGS_RICH_LEVELS)
+        raise HTTPException(status_code=400, detail=f"未知拟声标签档位 {level}，可选：{known}")
+    return level
+
+
 @router.post("/tag")
 async def tag_text(payload: TagRequest, request: Request) -> dict:
     """Insert emotion tags into an existing script without rewriting it."""
     _start(request)
     text = _check_text(payload.text)
     density = _check_density(payload.density)
+    rich_level = _check_rich_level(payload.rich_level)
 
     try:
         model = llm.resolve_model(payload.model)
         # requests is blocking; the event loop keeps serving audio meanwhile.
         result = await asyncio.to_thread(
-            tagger.tag_text, text, density, payload.allow_rich, model
+            tagger.tag_text, text, density, rich_level, model
         )
     except llm.LLMError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
@@ -97,6 +108,7 @@ async def write_script(payload: ScriptRequest, request: Request) -> dict:
     _start(request)
     topic = _check_text(payload.topic)
     density = _check_density(payload.density)
+    rich_level = _check_rich_level(payload.rich_level)
 
     try:
         model = llm.resolve_model(payload.model)
@@ -107,7 +119,7 @@ async def write_script(payload: ScriptRequest, request: Request) -> dict:
             (payload.tone or "").strip() or "亲切自然",
             (payload.audience or "").strip() or "普通听众",
             density,
-            payload.allow_rich,
+            rich_level,
             model,
         )
     except llm.LLMError as exc:

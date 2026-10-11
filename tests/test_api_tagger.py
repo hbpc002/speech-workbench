@@ -93,7 +93,53 @@ class TestTagEndpoint:
         assert "每 150 字" in canned.calls[0]["messages"][0]["content"]
 
     def test_allow_rich_reaches_the_prompt(self, client, no_auth, canned):
-        client.post("/api/tts/tag", json={"text": "你好。", "allow_rich": True})
+        client.post("/api/tts/tag", json={"text": "你好。", "rich_level": "light"})
+        assert "[sighing]" in canned.calls[0]["messages"][0]["content"]
+
+    def test_rich_tags_are_off_when_the_level_says_so(self, client, no_auth, canned):
+        client.post("/api/tts/tag", json={"text": "你好。", "rich_level": "off"})
+        system = canned.calls[0]["messages"][0]["content"]
+        assert "[sighing]" not in system
+        assert "不要使用任何拟声标签" in system
+
+    def test_heavy_level_asks_for_more_onomatopoeia(self, client, no_auth, canned):
+        def count(level):
+            canned.calls.clear()
+            client.post("/api/tts/tag", json={"text": "你好。", "rich_level": level})
+            return canned.calls[0]["messages"][0]["content"]
+
+        light = count("light")
+        heavy = count("heavy")
+        assert heavy != light
+        assert "全篇不超过 30 个" in heavy
+        assert "全篇不超过 12 个" in light
+
+    def test_rejects_an_unknown_rich_level(self, client, no_auth, canned):
+        response = client.post("/api/tts/tag", json={"text": "你好。", "rich_level": "loud"})
+        assert response.status_code == 400
+        assert not canned.calls
+
+    def test_defaults_to_the_configured_level(self, client, no_auth, canned, monkeypatch):
+        # Omitting the field must not silently mean "off" -- the whole point of
+        # the feature is that onomatopoeia is on by default.
+        client.post("/api/tts/tag", json={"text": "你好。"})
+        assert "[sighing]" in canned.calls[0]["messages"][0]["content"]
+
+        monkeypatch.setattr(config, "TAGS_DEFAULT_RICH_LEVEL", "off")
+        canned.calls.clear()
+        client.post("/api/tts/tag", json={"text": "你好。"})
+        assert "[sighing]" not in canned.calls[0]["messages"][0]["content"]
+
+    def test_off_level_strips_rich_tags_from_the_reply(self, client, no_auth, canned):
+        # The prompt is only half the gate; a model that ignores it still gets
+        # cleaned on the way out.
+        canned.reply = "[sighing][sad]唉。"
+        response = client.post("/api/tts/tag", json={"text": "唉。", "rich_level": "off"})
+        assert response.json()["text"] == "[sad]唉。"
+
+    def test_the_retired_allow_rich_field_is_ignored(self, client, no_auth, canned):
+        # Older frontends sent a bool; it must not silently switch rich tags off.
+        client.post("/api/tts/tag", json={"text": "你好。", "allow_rich": False})
         assert "[sighing]" in canned.calls[0]["messages"][0]["content"]
 
 

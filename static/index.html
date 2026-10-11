@@ -192,12 +192,13 @@
           <button type="button" id="tts-tag-ai">AI 加情感标签</button>
           <button type="button" class="ghost" id="tts-tag-fast">快速标注</button>
           <button type="button" class="ghost" id="tts-tag-write">AI 写口播稿</button>
+          <button type="button" class="ghost" id="tts-tag-strip" disabled>去标签</button>
           <span class="muted ai-unsupported" id="tts-tag-note" hidden></span>
         </div>
         <div class="tag-row tag-options">
           <label class="inline">模型 <select id="tts-tag-model"></select></label>
           <label class="inline">密度 <select id="tts-tag-density"></select></label>
-          <label class="inline"><input type="checkbox" id="tts-tag-rich"> 允许拟声标签</label>
+          <label class="inline">拟声标签 <select id="tts-tag-rich"></select></label>
         </div>
         <p class="muted tag-hint">点击插入到光标处。情感标签对其后所有文本生效，直到遇到下一个情感标签。</p>
       </div>

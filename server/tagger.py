@@ -45,6 +45,17 @@ _DENSITY_RULE = {
 }
 _DEFAULT_DENSITY = "normal"
 
+# 拟声标签的用量：(每多少字最多一个, 全篇上限)。
+#
+# 逐字率才是真正的控制项；上限只是防模型无视逐字率时无限插入的兜底，所以给得
+# 相当宽 —— 口播稿最长能给到 15 分钟约 3750 字，卡太死的话长稿会显得干巴巴。
+_RICH_BUDGET = {
+    "off": None,
+    "light": {"sparse": (250, 6), "normal": (180, 12), "dense": (120, 18)},
+    "heavy": {"sparse": (150, 15), "normal": (100, 30), "dense": (70, 45)},
+}
+_DEFAULT_RICH_LEVEL = "light"
+
 
 @dataclass
 class SanitizeResult:
@@ -68,6 +79,30 @@ def _density_rule(density: str) -> str:
     return _DENSITY_RULE[_DEFAULT_DENSITY]
 
 
+def rich_level_ids() -> set[str]:
+    return {item["id"] for item in config.TAGS_RICH_LEVELS}
+
+
+def normalize_rich_level(level: str | None) -> str:
+    """Map a request's rich-tag level onto one the catalogue defines."""
+    if not level:
+        return config.TAGS_DEFAULT_RICH_LEVEL or _DEFAULT_RICH_LEVEL
+    return level if level in rich_level_ids() else _DEFAULT_RICH_LEVEL
+
+
+def _rich_rule(level: str, density: str) -> str:
+    """Budget for onomatopoeia: a rate so it scales with length, plus a cap."""
+    budget = _RICH_BUDGET.get(level)
+    if not budget:
+        return "不要使用任何拟声标签。"
+    every, cap = budget.get(density, budget["normal"])
+    return (
+        f"每 {every} 字左右最多一个拟声标签，全篇不超过 {cap} 个。"
+        "用在笑点、转折、感叹、犹豫、醒悟等真人会自然发出反应声的地方，"
+        "不要机械地平均分布，也不要在很短的距离内连用同一个。"
+    )
+
+
 def _tag_table() -> tuple[str, str]:
     """Human label plus literal spelling, rendered from the voice catalogue."""
     control = " ".join(f"{item['name']} {item['tag']}" for item in voices.CONTROL_TAGS)
@@ -75,9 +110,10 @@ def _tag_table() -> tuple[str, str]:
     return control, rich
 
 
-def build_tag_messages(text: str, density: str, allow_rich: bool) -> list[dict]:
+def build_tag_messages(text: str, density: str, rich_level: str) -> list[dict]:
     """Instructions for labelling text that must come back word-for-word."""
     control, rich = _tag_table()
+    allow_rich = rich_level != "off"
     rules = [
         "1. 原文一个字都不得增加、删除、改写或调整顺序。它是用户自己写的，只能加标签。",
         "2. 标签只能插在句子的开头，不能插在句子中间，也不能把已有的标签搬走。",
@@ -85,8 +121,9 @@ def build_tag_messages(text: str, density: str, allow_rich: bool) -> list[dict]:
         "4. 方括号不得有其他用途：正文里如果本来就有 [1]、[注] 这类写法，原样保留。",
         "5. 只输出标注后的全文，不要解释、不要前言、不要总结、不要标题、不要代码块围栏。",
     ]
-    if allow_rich:
-        rules.append("6. 拟声标签全篇最多 2 个，只放在真正合适的转折或感叹处。")
+    # Always stated, including when off: omitting the table is weaker than
+    # forbidding the category, and models infer onomatopoeia from context.
+    rules.append("6. 拟声标签的用量：" + _rich_rule(rich_level, density))
 
     sections = [
         "你是一名中文口播稿的情感标注助手。你会收到一段已经写好的口播稿，"
@@ -96,7 +133,7 @@ def build_tag_messages(text: str, density: str, allow_rich: bool) -> list[dict]:
     ]
     if allow_rich:
         sections.append(
-            "【可用拟声标签】只在标签所在位置插入一次效果，不影响上下文，全篇至多 2 个：\n" + rich
+            "【可用拟声标签】只在标签所在位置插入一次效果，不影响上下文：\n" + rich
         )
     sections.append("【标签密度】" + _density_rule(density))
 
@@ -112,19 +149,18 @@ def build_script_messages(
     tone: str,
     audience: str,
     density: str,
-    allow_rich: bool,
+    rich_level: str,
 ) -> list[dict]:
     """Instructions for writing a new tagged script, mirroring the `?` dialog."""
     control, rich = _tag_table()
+    allow_rich = rich_level != "off"
     sections = [
         "你是一名专业的中文口播稿撰稿人。请写一段可以直接用于语音合成的口播稿。",
         "【重要前提】最终稿会被送入 TTS 引擎朗读，引擎会在文本中识别形如 [标签] 的情感标记。",
         "【可用情感标签】写在标签后会影响其后所有文字，直到遇到下一个情感标签：\n" + control,
     ]
     if allow_rich:
-        sections.append(
-            "【可用拟声标签】只在标签所在位置插入一次效果，不影响上下文，全篇至多 2 个：\n" + rich
-        )
+        sections.append("【可用拟声标签】只在标签所在位置插入一次效果，不影响上下文：\n" + rich)
     sections.append(
         "【标签规则】\n"
         "1. 标签只放在句首，不要插在句子中间。\n"
@@ -132,6 +168,7 @@ def build_script_messages(
         "3. 方括号内只能填上面的标签，不要自创；也不要出现 [1]、[注] 这类其他用法。\n"
         "4. " + _density_rule(density)
     )
+    sections.append("5. 拟声标签的用量：" + _rich_rule(rich_level, density))
     sections.append(
         "【文稿要求】\n"
         "1. 口语化，短句为主，适合朗读。\n"
@@ -233,10 +270,10 @@ def _call(messages: list[dict], model: str, max_tokens: int | None) -> str:
     return llm.chat(messages, model, max_tokens=max_tokens)
 
 
-def tag_text(text: str, density: str, allow_rich: bool, model: str) -> SanitizeResult:
+def tag_text(text: str, density: str, rich_level: str, model: str) -> SanitizeResult:
     """Insert tags into `text` and prove afterwards that nothing else moved."""
-    raw = _call(build_tag_messages(text, density, allow_rich), model, None)
-    return sanitize(raw, allow_rich=allow_rich, source=text)
+    raw = _call(build_tag_messages(text, density, rich_level), model, None)
+    return sanitize(raw, allow_rich=rich_level != "off", source=text)
 
 
 def write_script(
@@ -245,10 +282,10 @@ def write_script(
     tone: str,
     audience: str,
     density: str,
-    allow_rich: bool,
+    rich_level: str,
     model: str,
 ) -> SanitizeResult:
     """Write a fresh script from a topic. No drift check: the text is new."""
-    messages = build_script_messages(topic, duration, tone, audience, density, allow_rich)
+    messages = build_script_messages(topic, duration, tone, audience, density, rich_level)
     raw = _call(messages, model, None)
-    return sanitize(raw, allow_rich=allow_rich)
+    return sanitize(raw, allow_rich=rich_level != "off")

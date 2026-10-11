@@ -73,6 +73,37 @@ export function tagSentences(sentences, density = 'normal', allowRich = false) {
 }
 
 /**
+ * True when the script already contains one of `tags`.
+ *
+ * @param {string} text
+ * @param {string[]} tags  literal tag strings, e.g. ['[sad]', '[sighing]']
+ */
+export function hasAnyTag(text, tags) {
+  const body = text || '';
+  return tags.some((tag) => body.includes(tag));
+}
+
+/**
+ * Remove every tag in `tags`, leaving all other bracket groups alone.
+ *
+ * Tidy-up beyond the deletion itself: runs of spaces collapse and any space
+ * left in front of punctuation goes away, because deleting "[sad]" from
+ * "[sad] 今天" would otherwise leave a dangling gap. `tags` should be sorted
+ * longest-first so multi-word tags are not clipped by a shorter one.
+ *
+ * @param {string} text
+ * @param {string[]} tags
+ */
+export function stripKnownTags(text, tags) {
+  let out = text || '';
+  for (const tag of tags) out = out.split(tag).join('');
+  return out
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/ +([，。！？、；：,.!?])/g, '$1')
+    .trim();
+}
+
+/**
  * Insert a tag into a script without touching anything else.
  *
  * `sentences` comes from splitSentences(), which trims as it splits, so the

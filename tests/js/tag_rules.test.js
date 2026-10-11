@@ -6,7 +6,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { applyRules, tagSentences } from '../../static/js/tag_rules.js';
+import { applyRules, hasAnyTag, stripKnownTags, tagSentences } from '../../static/js/tag_rules.js';
+
+/** The real catalogue, longest-first, the way allTags() builds it. */
+const TAGS = ['[sad]', '[excited]', '[sighing]', '[giggles]', '[deep and loud shouting]', '[very fast]']
+  .sort((a, b) => b.length - a.length);
 
 /** Mirror of splitSentences() in static/js/audio.js, which needs the DOM. */
 function splitSentences(text) {
@@ -110,5 +114,68 @@ describe('inserted count', () => {
 
   it('is zero for an untouched script', () => {
     assert.equal(tag('完全平淡无奇的一段话。').inserted, 0);
+  });
+});
+describe('hasAnyTag', () => {
+  it('detects a known tag', () => {
+    assert.equal(hasAnyTag('[sad]唉。', TAGS), true);
+  });
+
+  it('ignores brackets it does not know', () => {
+    // The user's own [1] / [注] must not count.
+    assert.equal(hasAnyTag('参见[1]。', TAGS), false);
+    assert.equal(hasAnyTag('[melancholic]唉。', TAGS), false);
+  });
+
+  it('is false for empty or tag-free text', () => {
+    assert.equal(hasAnyTag('', TAGS), false);
+    assert.equal(hasAnyTag('   ', TAGS), false);
+    assert.equal(hasAnyTag(undefined, TAGS), false);
+  });
+});
+
+describe('stripKnownTags', () => {
+  it('removes every occurrence, not just the first', () => {
+    assert.equal(stripKnownTags('[sad]一。[excited]二。[sad]三。', TAGS), '一。二。三。');
+  });
+
+  it('removes multi-word tags whole', () => {
+    assert.equal(
+      stripKnownTags('[deep and loud shouting]喊！[very fast]快跑！', TAGS),
+      '喊！快跑！'
+    );
+  });
+
+  it('leaves unknown bracket groups alone', () => {
+    // Stripping [1] would be data loss, and would trip the drift check.
+    assert.equal(stripKnownTags('[sad]参见[1]。[注]完。', TAGS), '参见[1]。[注]完。');
+  });
+
+  it('tidies the whitespace the deletion leaves behind', () => {
+    // Deleting "[sad]" from "[sad] 你好" would otherwise leave a dangling gap.
+    assert.equal(stripKnownTags('[sad] 你好，世界。', TAGS), '你好，世界。');
+    assert.equal(stripKnownTags('[sad][excited]你好', TAGS), '你好');
+    assert.equal(stripKnownTags('  [sad]  你好  ', TAGS), '你好');
+  });
+
+  it('removes a space that sat in front of punctuation', () => {
+    // "今天[sad]，世界" becomes "今天，世界" rather than "今天 ，世界".
+    assert.equal(stripKnownTags('今天[sad]，世界。', TAGS), '今天，世界。');
+  });
+
+  it('handles empty input', () => {
+    assert.equal(stripKnownTags('', TAGS), '');
+    assert.equal(stripKnownTags(undefined, TAGS), '');
+  });
+
+  it('is a no-op on text with no tags', () => {
+    assert.equal(stripKnownTags('一段普通的文字。', TAGS), '一段普通的文字。');
+  });
+
+  it('round-trips with the tagger: strip, then re-tag', () => {
+    const script = '[sad]今天很难过。[giggles]哈哈。';
+    const bare = stripKnownTags(script, TAGS);
+    assert.equal(bare, '今天很难过。哈哈。');
+    assert.equal(hasAnyTag(bare, TAGS), false);
   });
 });

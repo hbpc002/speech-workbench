@@ -177,14 +177,24 @@ LLM_API_KEY = _env("LLM_API_KEY", default=API_KEY)
 LLM_MODELS = _parse_models(_env("LLM_MODELS", default="qwen-turbo:快速,qwen-plus:均衡"))
 LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")
 
-# SDK 默认 300s 太长：Vercel 的函数上限正好也是 300s，一个卡住的上游会把整个
-# 函数的预算耗光。自己卡到 60s。
-LLM_TIMEOUT_SECONDS = _env_int("LLM_TIMEOUT_SECONDS", default=60)
-LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", default=3000)
+# 拟声标签是让口播听起来像真人说话的关键，所以默认就开着，且用量给得比较宽。
+# 逐字率控制疏密，上限只是防模型无视逐字率时的兜底 —— 脚本越长上限越该放得开。
+TAGS_RICH_LEVELS = [
+    {"id": "off", "name": "关"},
+    {"id": "light", "name": "少 · 自然点缀"},
+    {"id": "heavy", "name": "多 · 真人感更强"},
+]
+TAGS_DEFAULT_RICH_LEVEL = "light"
+
+# 上限的是给到 15 分钟（约 3750 字）留的余量：中文大约一 token 一字，
+# 3750 字成稿要 4000+ token，3000 会被截断。这是上限不是预留，费用按实际生成
+# 计，所以调高不会多花钱，只是允许更长的稿子。
+LLM_TIMEOUT_SECONDS = _env_int("LLM_TIMEOUT_SECONDS", default=120)
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", default=6000)
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", default=0.3)
 
-# 一次标注的输入上限。超长文本既慢又贵，超了就让用户分段。
-TAGS_MAX_CHARS = _env_int("TAGS_MAX_CHARS", default=2000)
+# 一次标注的输入上限。跟着最长时长一起放宽，否则长稿只能写、不能标。
+TAGS_MAX_CHARS = _env_int("TAGS_MAX_CHARS", default=4000)
 
 TAGS_DENSITIES = [
     {"id": "sparse", "name": "稀疏"},
@@ -202,6 +212,8 @@ TAGS_DURATIONS = [
     {"id": "90 秒", "name": "90 秒 · 约 380 字"},
     {"id": "3 分钟", "name": "3 分钟 · 约 750 字"},
     {"id": "5 分钟", "name": "5 分钟 · 约 1250 字"},
+    {"id": "10 分钟", "name": "10 分钟 · 约 2500 字"},
+    {"id": "15 分钟", "name": "15 分钟 · 约 3750 字"},
 ]
 
 TAGS_TONES = [
@@ -295,6 +307,8 @@ def public_config() -> dict:
             "tones": TAGS_TONES,
             "audiences": TAGS_AUDIENCES,
             "topic_hints": TAGS_TOPIC_HINTS,
+            "rich_levels": TAGS_RICH_LEVELS,
+            "default_rich_level": TAGS_DEFAULT_RICH_LEVEL,
         },
         "realtime_voices": REALTIME_VOICES,
         "realtime_vad_modes": REALTIME_VAD_MODES,

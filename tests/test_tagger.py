@@ -5,6 +5,8 @@ would be read aloud literally by the engine, and a rewritten script would
 silently discard the user's work. Both are asserted here.
 """
 
+import re
+
 import pytest
 
 from server import llm, tagger, voices
@@ -29,27 +31,73 @@ def canned(monkeypatch):
     return stub
 
 
+class TestRichLevels:
+    def test_off_forbids_onomatopoeia_explicitly(self):
+        # Not merely omitted: silence is weaker than an instruction, and models
+        # infer onomatopoeia from context on their own.
+        system = tagger.build_tag_messages("你好。", "normal", "off")[0]["content"]
+        assert "不要使用任何拟声标签" in system
+        assert "[sighing]" not in system
+
+    @pytest.mark.parametrize("level", ["light", "heavy"])
+    def test_open_levels_list_the_rich_tags(self, level):
+        system = tagger.build_tag_messages("你好。", "normal", level)[0]["content"]
+        assert "[sighing]" in system
+
+    def test_heavy_asks_for_more_than_light(self):
+        def cap(level):
+            system = tagger.build_tag_messages("你好。", "normal", level)[0]["content"]
+            return int(re.search(r"不超过 (\d+) 个", system).group(1))
+
+        assert cap("heavy") > cap("light")
+
+    def test_denser_settings_ask_for_more(self):
+        def budget(level, density):
+            rule = tagger._rich_rule(level, density)
+            every, cap = re.search(r"每 (\d+) 字.*?不超过 (\d+) 个", rule).groups()
+            return int(every), int(cap)
+
+        # Every density must be at least as generous as the one above it.
+        for level in ("light", "heavy"):
+            assert budget(level, "dense") <= budget(level, "normal")
+            assert budget(level, "normal") <= budget(level, "sparse")
+
+    def test_caps_grow_with_the_script_length_budget(self):
+        # A 15-minute script needs room; a cap of 4 would leave it dry.
+        heavy = int(re.search(r"不超过 (\d+) 个", tagger._rich_rule("heavy", "normal")).group(1))
+        assert heavy >= 20
+
+    def test_unknown_level_falls_back_to_light(self):
+        assert tagger.normalize_rich_level("loud") == "light"
+        assert tagger.normalize_rich_level("") == "light"
+        assert tagger.normalize_rich_level(None) == "light"
+
+    def test_known_levels_pass_through(self):
+        for level in ("off", "light", "heavy"):
+            assert tagger.normalize_rich_level(level) == level
+
+
 class TestPrompts:
     def test_tag_prompt_lists_the_catalogue_tags(self):
         # Built from voices, not a hand-written copy: the browser already gets
         # these same tables and the two must not drift.
-        system = tagger.build_tag_messages("你好。", "normal", False)[0]["content"]
+        system = tagger.build_tag_messages("你好。", "normal", "off")[0]["content"]
         for item in voices.CONTROL_TAGS:
             assert item["tag"] in system
 
     def test_rich_tags_are_offered_only_when_allowed(self):
-        without = tagger.build_tag_messages("你好。", "normal", False)[0]["content"]
-        with_rich = tagger.build_tag_messages("你好。", "normal", True)[0]["content"]
+        without = tagger.build_tag_messages("你好。", "normal", "off")[0]["content"]
+        with_rich = tagger.build_tag_messages("你好。", "normal", "light")[0]["content"]
         assert "[sighing]" not in without
         assert "[sighing]" in with_rich
 
     def test_prompt_forbids_rewriting(self):
-        system = tagger.build_tag_messages("你好。", "normal", False)[0]["content"]
+        system = tagger.build_tag_messages("你好。", "normal", "off")[0]["content"]
         assert "不得增加、删除、改写" in system
 
     def test_script_prompt_carries_the_brief(self):
         messages = tagger.build_script_messages(
-            "露营", "90 秒", "轻松活泼", "宝妈", "dense", True
+            "露营", "90 秒", "轻松活泼", "宝妈", "dense", "light"
         )
         system = messages[0]["content"]
         assert "露营" in system
@@ -58,12 +106,12 @@ class TestPrompts:
         assert "宝妈" in system
 
     def test_unknown_density_falls_back_to_normal(self):
-        system = tagger.build_tag_messages("你好。", "nonsense", False)[0]["content"]
+        system = tagger.build_tag_messages("你好。", "nonsense", "off")[0]["content"]
         assert tagger._DENSITY_RULE["normal"].split("。")[0] in system
 
     def test_density_changes_the_instruction(self):
-        sparse = tagger.build_tag_messages("你好。", "sparse", False)[0]["content"]
-        dense = tagger.build_tag_messages("你好。", "dense", False)[0]["content"]
+        sparse = tagger.build_tag_messages("你好。", "sparse", "off")[0]["content"]
+        dense = tagger.build_tag_messages("你好。", "dense", "off")[0]["content"]
         assert sparse != dense
         assert "250" in sparse
         assert "80" in dense
@@ -159,13 +207,13 @@ class TestDriftDetection:
 class TestHighLevel:
     def test_tag_text_passes_the_source_through_for_comparison(self, canned):
         canned.reply = "[sad]今天很难过。"
-        result = tagger.tag_text("今天很难过。", "normal", False, "fast")
+        result = tagger.tag_text("今天很难过。", "normal", "off", "fast")
         assert result.text == "[sad]今天很难过。"
         assert canned.calls[0]["messages"][-1]["content"] == "今天很难过。"
 
     def test_write_script_does_not_compare_against_a_source(self, canned):
         canned.reply = "露营装备清单：帐篷、睡袋、头灯。"
-        result = tagger.write_script("露营", "60 秒", "轻松", "宝妈", "normal", False, "fast")
+        result = tagger.write_script("露营", "60 秒", "轻松", "宝妈", "normal", "off", "fast")
         assert result.warnings == []
 
     def test_provider_failure_propagates_as_llm_error(self, canned, monkeypatch):
@@ -174,4 +222,4 @@ class TestHighLevel:
 
         monkeypatch.setattr(llm, "chat", boom)
         with pytest.raises(llm.LLMError):
-            tagger.tag_text("你好。", "normal", False, "fast")
+            tagger.tag_text("你好。", "normal", "off", "fast")

@@ -21,7 +21,7 @@ import {
 } from '/static/js/audio.js';
 import { api, applySocketStatus, el, state } from '/static/js/app.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
-import { applyRules } from '/static/js/tag_rules.js';
+import { applyRules, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
 import { VOICEOVER_PROMPT } from '/static/js/voiceover_prompt.js';
 
 const SAMPLE_RATE = 22050;
@@ -162,21 +162,35 @@ function allTags() {
 
 /** Removes recognised emotion tags from `text`; other brackets are left alone. */
 function stripTags(text) {
-  let out = text;
-  for (const tag of allTags()) {
-    out = out.split(tag).join('');
-  }
-  return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([，。！？、；：,.!?])/g, '$1').trim();
+  return stripKnownTags(text, allTags());
 }
 
 function hasTags(text) {
-  return allTags().some((tag) => text.includes(tag));
+  return hasAnyTag(text, allTags());
+}
+
+/** One-click "remove all tags" over the current script, undoable like the rest. */
+function stripScriptTags() {
+  const textarea = el('tts-text');
+  if (!hasTags(textarea.value)) return;
+  pushUndo(textarea.value);
+  setScriptText(stripTags(textarea.value));
+}
+
+/** Keeps the 去标签 button honest: disabled while there is nothing to remove. */
+function syncStripButton() {
+  el('tts-tag-strip').disabled = !hasTags(el('tts-text').value);
 }
 
 // ---- script text: AI tagging, local rules, undo ----------------------------
 
 /** What the dialog is currently previewing. */
 let pendingResult = null;
+
+// Which button opened the dialog. The 返回 step only makes sense for the
+// script form (写稿 → 生成 → 改参数重来); the two tagging entries have no
+// earlier screen, so they must not offer a way back into the script form.
+let dialogOrigin = null;
 
 // Undo covers every change this tab makes to the script box, not just the AI
 // one: applying tags, and clearing. A stack rather than a single slot, so
@@ -217,8 +231,13 @@ function tagOptions() {
   return {
     model: el('tts-tag-model').value,
     density: el('tts-tag-density').value || 'normal',
-    allow_rich: el('tts-tag-rich').checked,
+    rich_level: el('tts-tag-rich').value || 'light',
   };
+}
+
+/** Local rules only understand the on/off distinction, not the budget. */
+function richAllowed() {
+  return tagOptions().rich_level !== 'off';
 }
 
 /** Sentinel option value meaning "let me type my own". */
@@ -264,6 +283,7 @@ function renderTagOptions() {
   }
   fill(el('tts-tag-model'), tagger.models || [], preferred || tagger.default_model || '');
   fill(el('tts-tag-density'), tags.densities || [], 'normal');
+  fill(el('tts-tag-rich'), tags.rich_levels || [], tags.default_rich_level || 'light');
 
   fill(el('tts-ai-duration'), tags.durations || [], '60 秒', true);
   fill(el('tts-ai-tone'), tags.tones || [], '亲切自然', true);
@@ -310,6 +330,7 @@ function closeTagDialog() {
   const dialog = el('tts-ai');
   if (dialog.open) dialog.close();
   pendingResult = null;
+  dialogOrigin = null;
 }
 
 /** showModal() throws if the dialog is already up, which 返回 would otherwise hit. */
@@ -358,6 +379,9 @@ function showResult(payload) {
   compare.hidden = !payload.before;
   el('tts-ai-before').value = payload.before || '';
   el('tts-ai-after').value = payload.text || '';
+
+  // Only the script form sits behind this result screen.
+  el('tts-ai-back').hidden = dialogOrigin !== 'script';
 }
 
 function tagStatus(message) {
@@ -372,6 +396,7 @@ async function requestTags() {
     return;
   }
   const options = tagOptions();
+  dialogOrigin = 'tag';
   await withLoading('AI 加情感标签', api('/api/tts/tag', {
     method: 'POST',
     body: JSON.stringify({ text, ...options }),
@@ -405,12 +430,13 @@ function requestFastTags() {
     tagStatus('请先输入文本');
     return;
   }
-  const { density, allow_rich: allowRich } = tagOptions();
-  const { text: tagged, inserted } = applyRules(text, splitSentences(text), density, allowRich);
+  const { density } = tagOptions();
+  const { text: tagged, inserted } = applyRules(text, splitSentences(text), density, richAllowed());
   el('tts-ai-title').textContent = '快速标注';
   el('tts-ai-form').hidden = true;
   el('tts-ai-result').hidden = false;
   el('tts-ai-error').hidden = true;
+  dialogOrigin = 'fast';
   showTagDialog();
   showResult({ text: tagged, before: text, inserted, warnings: [] });
 }
@@ -433,12 +459,19 @@ function applyTagResult() {
 }
 
 function openScriptDialog() {
+  dialogOrigin = 'script';
   el('tts-ai-title').textContent = 'AI 写口播稿';
   el('tts-ai-form').hidden = false;
   el('tts-ai-result').hidden = true;
   el('tts-ai-error').hidden = true;
   showTagDialog();
   el('tts-ai-topic').focus();
+}
+
+/** 返回 only rewinds to the brief; anything else just dismisses. */
+function backFromResult() {
+  if (dialogOrigin === 'script') openScriptDialog();
+  else closeTagDialog();
 }
 
 /** Grey out the AI buttons when no provider is configured or tags are moot. */
@@ -450,6 +483,9 @@ function syncTagActions() {
   }
   // The local rules need no provider, so only the tag support matters.
   el('tts-tag-fast').disabled = !supported;
+  // 去标签 needs neither, but there is nothing to strip on a tag-less model:
+  // renderTagChips() has already removed them, and it fires `input`.
+  syncStripButton();
 
   const note = el('tts-tag-note');
   if (!supported) {
@@ -999,13 +1035,17 @@ export function init() {
   el('tts-tag-ai').addEventListener('click', requestTags);
   el('tts-tag-fast').addEventListener('click', requestFastTags);
   el('tts-tag-write').addEventListener('click', openScriptDialog);
+  el('tts-tag-strip').addEventListener('click', stripScriptTags);
   el('tts-undo').addEventListener('click', undoText);
   el('tts-clear-text').addEventListener('click', clearText);
+  // Keeps 去标签 disabled until the script actually holds a tag, and picks up
+  // the strip renderTagChips() performs when switching to a tag-less model.
+  el('tts-text').addEventListener('input', syncStripButton);
   el('tts-ai-run').addEventListener('click', requestScript);
   el('tts-ai-close').addEventListener('click', closeTagDialog);
   el('tts-ai-cancel').addEventListener('click', closeTagDialog);
   el('tts-ai-apply').addEventListener('click', applyTagResult);
-  el('tts-ai-back').addEventListener('click', openScriptDialog);
+  el('tts-ai-back').addEventListener('click', backFromResult);
 
   el('tts-tag-model').addEventListener('change', (event) => {
     try {
