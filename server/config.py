@@ -192,6 +192,55 @@ TAGS_DENSITIES = [
     {"id": "dense", "name": "密集"},
 ]
 
+# 「AI 写口播稿」表单的预制选项。id 是真正发给模型的值，name 只用于显示。
+#
+# 时长的显示名带上大致字数，是因为「90 秒」对写稿的人没有直观概念；换算按
+# 约 250 字/分钟的中文口播语速。
+TAGS_DURATIONS = [
+    {"id": "30 秒", "name": "30 秒 · 约 120 字"},
+    {"id": "60 秒", "name": "60 秒 · 约 250 字"},
+    {"id": "90 秒", "name": "90 秒 · 约 380 字"},
+    {"id": "3 分钟", "name": "3 分钟 · 约 750 字"},
+    {"id": "5 分钟", "name": "5 分钟 · 约 1250 字"},
+]
+
+TAGS_TONES = [
+    # 「亲切自然」排在最前：它既是前端的预选项，也是 api_tagger 在 tone 留空时
+    # 用的兜底值，列表里没有它的话下拉会静默落到第二项。
+    {"id": "亲切自然", "name": "亲切自然"},
+    {"id": "亲切推荐", "name": "亲切推荐"},
+    {"id": "严肃科普", "name": "严肃科普"},
+    {"id": "轻松活泼", "name": "轻松活泼"},
+    {"id": "深情叙述", "name": "深情叙述"},
+    {"id": "紧张解说", "name": "紧张解说"},
+    {"id": "幽默调侃", "name": "幽默调侃"},
+    {"id": "温柔治愈", "name": "温柔治愈"},
+    {"id": "干脆利落", "name": "干脆利落"},
+]
+
+TAGS_AUDIENCES = [
+    {"id": "宝妈", "name": "宝妈"},
+    {"id": "数码爱好者", "name": "数码爱好者"},
+    {"id": "职场新人", "name": "职场新人"},
+    {"id": "中小学生", "name": "中小学生"},
+    {"id": "大学生", "name": "大学生"},
+    {"id": "车主", "name": "车主"},
+    {"id": "中老年人", "name": "中老年人"},
+    {"id": "户外爱好者", "name": "户外爱好者"},
+]
+
+# 主题本质上是自由输入，锁成下拉会把人挡住，所以只给 datalist 提示。
+TAGS_TOPIC_HINTS = [
+    "产品功能介绍",
+    "新品发布预告",
+    "活动促销通知",
+    "知识科普讲解",
+    "开箱测评",
+    "课程招生简章",
+    "门店开业公告",
+    "周末景点推荐",
+]
+
 TAGS_LIMIT_MAX_ATTEMPTS = _env_int("TAGS_LIMIT_MAX_ATTEMPTS", default=20)
 TAGS_LIMIT_WINDOW_SECONDS = _env_int("TAGS_LIMIT_WINDOW_SECONDS", default=60)
 TAGS_LIMIT_LOCKOUT_SECONDS = _env_int("TAGS_LIMIT_LOCKOUT_SECONDS", default=120)
@@ -242,6 +291,10 @@ def public_config() -> dict:
         "tags": {
             "max_chars": TAGS_MAX_CHARS,
             "densities": TAGS_DENSITIES,
+            "durations": TAGS_DURATIONS,
+            "tones": TAGS_TONES,
+            "audiences": TAGS_AUDIENCES,
+            "topic_hints": TAGS_TOPIC_HINTS,
         },
         "realtime_voices": REALTIME_VOICES,
         "realtime_vad_modes": REALTIME_VAD_MODES,

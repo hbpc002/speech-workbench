@@ -56,12 +56,27 @@
 
     <div class="ai-step" id="tts-ai-form">
       <div class="controls">
-        <label class="grow">主题 <input type="text" id="tts-ai-topic" placeholder="例如：露营装备清单"></label>
-        <label>时长 <input type="text" id="tts-ai-duration" value="60 秒" style="width:90px"></label>
+        <label class="grow">主题
+          <input type="text" id="tts-ai-topic" list="tts-ai-topic-hints"
+                 placeholder="例如：露营装备清单">
+          <datalist id="tts-ai-topic-hints"></datalist>
+        </label>
       </div>
       <div class="controls">
-        <label class="grow">语气 <input type="text" id="tts-ai-tone" value="亲切自然"></label>
-        <label class="grow">目标听众 <input type="text" id="tts-ai-audience" placeholder="例如：宝妈"></label>
+        <label>时长 <select id="tts-ai-duration"></select></label>
+        <label class="grow" id="tts-ai-duration-wrap" hidden>
+          自定义时长 <input type="text" id="tts-ai-duration-custom" placeholder="例如：2 分半">
+        </label>
+        <label>语气 <select id="tts-ai-tone"></select></label>
+        <label class="grow" id="tts-ai-tone-wrap" hidden>
+          自定义语气 <input type="text" id="tts-ai-tone-custom" placeholder="例如：像老朋友聊天">
+        </label>
+      </div>
+      <div class="controls">
+        <label>目标听众 <select id="tts-ai-audience"></select></label>
+        <label class="grow" id="tts-ai-audience-wrap" hidden>
+          自定义听众 <input type="text" id="tts-ai-audience-custom" placeholder="例如：对宠物感兴趣的人">
+        </label>
       </div>
       <p class="muted">稿子会带着情感标签一起写好，直接落到文本框。</p>
       <div class="modal-foot">

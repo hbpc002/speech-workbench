@@ -221,21 +221,40 @@ function tagOptions() {
   };
 }
 
+/** Sentinel option value meaning "let me type my own". */
+const CUSTOM = '__custom__';
+
+/**
+ * Fill a `<select>` from a preset list.
+ *
+ * `allowCustom` appends a 自定义… escape hatch. The model picker must not have
+ * one -- the server validates model ids against a whitelist, so a free-text
+ * option would only ever be rejected -- but 时长/语气/听众 are prompt fragments,
+ * and locking users into a preset list would strand anyone with an unusual
+ * audience.
+ */
+function fill(node, items, selected, allowCustom = false) {
+  node.innerHTML = '';
+  for (const item of items) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.name;
+    node.appendChild(option);
+  }
+  if (allowCustom) {
+    const option = document.createElement('option');
+    option.value = CUSTOM;
+    option.textContent = '自定义…';
+    node.appendChild(option);
+  }
+  const ids = items.map((item) => item.id);
+  const wanted = selected && ids.includes(selected) ? selected : ids[0];
+  node.value = wanted || CUSTOM;
+}
+
 function renderTagOptions() {
   const tagger = state.config.llm || {};
-  const models = tagger.models || [];
-  const densities = (state.config.tags?.densities) || [];
-
-  const fill = (node, items, selected) => {
-    node.innerHTML = '';
-    for (const item of items) {
-      const option = document.createElement('option');
-      option.value = item.id;
-      option.textContent = item.name;
-      node.appendChild(option);
-    }
-    if (selected && items.some((item) => item.id === selected)) node.value = selected;
-  };
+  const tags = state.config.tags || {};
 
   let preferred = '';
   try {
@@ -243,8 +262,41 @@ function renderTagOptions() {
   } catch (_) {
     /* private mode; the server default is fine */
   }
-  fill(el('tts-tag-model'), models, preferred || tagger.default_model || '');
-  fill(el('tts-tag-density'), densities, 'normal');
+  fill(el('tts-tag-model'), tagger.models || [], preferred || tagger.default_model || '');
+  fill(el('tts-tag-density'), tags.densities || [], 'normal');
+
+  fill(el('tts-ai-duration'), tags.durations || [], '60 秒', true);
+  fill(el('tts-ai-tone'), tags.tones || [], '亲切自然', true);
+  fill(el('tts-ai-audience'), tags.audiences || [], '宝妈', true);
+
+  const hints = el('tts-ai-topic-hints');
+  hints.innerHTML = '';
+  for (const hint of tags.topic_hints || []) {
+    const option = document.createElement('option');
+    option.value = hint;
+    hints.appendChild(option);
+  }
+
+  // Reveal the free-text box only while 自定义… is selected.
+  for (const [selectId, wrapId] of [
+    ['tts-ai-duration', 'tts-ai-duration-wrap'],
+    ['tts-ai-tone', 'tts-ai-tone-wrap'],
+    ['tts-ai-audience', 'tts-ai-audience-wrap'],
+  ]) {
+    const select = el(selectId);
+    const wrap = el(wrapId);
+    const sync = () => {
+      wrap.hidden = select.value !== CUSTOM;
+    };
+    select.addEventListener('change', sync);
+    sync();
+  }
+}
+
+/** The preset, or whatever the user typed when they picked 自定义…. */
+function scriptField(selectId, inputId) {
+  const select = el(selectId);
+  return select.value === CUSTOM ? el(inputId).value.trim() : select.value;
 }
 
 function aiConfigured() {
@@ -338,9 +390,9 @@ async function requestScript() {
     method: 'POST',
     body: JSON.stringify({
       topic,
-      duration: el('tts-ai-duration').value.trim(),
-      tone: el('tts-ai-tone').value.trim(),
-      audience: el('tts-ai-audience').value.trim(),
+      duration: scriptField('tts-ai-duration', 'tts-ai-duration-custom'),
+      tone: scriptField('tts-ai-tone', 'tts-ai-tone-custom'),
+      audience: scriptField('tts-ai-audience', 'tts-ai-audience-custom'),
       ...options,
     }),
   }).then((body) => ({ ...body, before: '' })));

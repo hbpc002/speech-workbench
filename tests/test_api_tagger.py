@@ -124,6 +124,34 @@ class TestScriptEndpoint:
         assert client.post("/api/tts/script", json={"topic": ""}).status_code == 400
         assert not canned.calls
 
+    def test_accepts_values_outside_the_preset_lists(self, client, no_auth, canned):
+        # The browser offers 自定义… for all three, so the server must not
+        # validate them against the preset ids.
+        canned.reply = "[excited]今天去露营啦！"
+        response = client.post(
+            "/api/tts/script",
+            json={
+                "topic": "露营",
+                "duration": "2 分半",
+                "tone": "像老朋友聊天",
+                "audience": "对宠物感兴趣的人",
+            },
+        )
+        assert response.status_code == 200
+        system = canned.calls[0]["messages"][0]["content"]
+        assert "2 分半" in system
+        assert "像老朋友聊天" in system
+        assert "对宠物感兴趣的人" in system
+
+    def test_blank_brief_fields_use_the_server_defaults(self, client, no_auth, canned):
+        # These must stay in step with the ids in config.TAGS_TONES /
+        # TAGS_DURATIONS, otherwise the picker and the fallback disagree.
+        client.post("/api/tts/script", json={"topic": "露营"})
+        system = canned.calls[0]["messages"][0]["content"]
+        assert "60 秒" in system
+        assert "亲切自然" in system
+        assert "普通听众" in system
+
 
 class TestUpstreamErrors:
     def test_llm_error_status_is_forwarded(self, client, no_auth, monkeypatch):

@@ -68,6 +68,43 @@ class TestPublicConfig:
             item["id"] for item in payload["tags"]["densities"]
         }
 
+    def test_publishes_the_script_presets(self):
+        tags = config.public_config()["tags"]
+        assert tags["durations"] == config.TAGS_DURATIONS
+        assert tags["tones"] == config.TAGS_TONES
+        assert tags["audiences"] == config.TAGS_AUDIENCES
+        assert tags["topic_hints"] == config.TAGS_TOPIC_HINTS
+
+    @pytest.mark.parametrize("name", ["durations", "tones", "audiences"])
+    def test_presets_are_non_empty_and_unique(self, name):
+        # A duplicate id would show twice in the picker and silently make the
+        # first one unreachable.
+        items = config.public_config()["tags"][name]
+        assert items, f"{name} is empty"
+        ids = [item["id"] for item in items]
+        assert len(ids) == len(set(ids)), f"{name} has duplicate ids"
+
+    def test_topic_hints_are_unique_strings(self):
+        # A plain list, not {id, name}: they feed a <datalist>.
+        hints = config.public_config()["tags"]["topic_hints"]
+        assert hints
+        assert all(isinstance(hint, str) and hint.strip() for hint in hints)
+        assert len(hints) == len(set(hints))
+
+    def test_default_presets_exist_in_the_lists(self):
+        # The browser preselects these and api_tagger falls back to them when a
+        # field is blank; a missing entry would make the two disagree.
+        tags = config.public_config()["tags"]
+        assert "60 秒" in [item["id"] for item in tags["durations"]]
+        assert "亲切自然" in [item["id"] for item in tags["tones"]]
+        assert "宝妈" in [item["id"] for item in tags["audiences"]]
+
+    def test_presets_carry_a_display_name(self):
+        # tab_tts.js reads item.name; an entry without one renders as blank.
+        for name in ("durations", "tones", "audiences"):
+            for item in config.public_config()["tags"][name]:
+                assert item["name"], f"{name} entry {item} has no name"
+
 
 @pytest.mark.parametrize("raw", ["", "  ", ",,,"])
 def test_parse_models_never_raises(raw):

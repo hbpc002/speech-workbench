@@ -570,6 +570,10 @@ p.hint {
   gap: 10px;
 }
 
+/* Preset pickers size to their widest option; 时长 carries a word-count hint
+   that would otherwise stretch the whole modal row. */
+#tts-ai-form select { max-width: 180px; }
+
 .ai-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
 #tts-ai-error {
