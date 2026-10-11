@@ -58,6 +58,11 @@ SESSION_SECRET = _env("SESSION_SECRET", default=APP_PASSWORD)
 
 SESSION_TTL_SECONDS = int(_env("SESSION_TTL_SECONDS", default=7 * 24 * 3600))
 
+# Login throttling. In-memory per instance; see server/ratelimit.py for scope.
+LOGIN_MAX_ATTEMPTS = int(_env("LOGIN_MAX_ATTEMPTS", default=5))
+LOGIN_WINDOW_SECONDS = int(_env("LOGIN_WINDOW_SECONDS", default=600))
+LOGIN_LOCKOUT_SECONDS = int(_env("LOGIN_LOCKOUT_SECONDS", default=900))
+
 # ---- voice clone enrollment ------------------------------------------------
 
 # VoiceEnrollmentService.create_voice(url=...) requires a URL that DashScope can

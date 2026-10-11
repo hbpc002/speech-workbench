@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import api_voices, auth, config, storage, ws_asr, ws_chat, ws_tts
+from . import api_voices, auth, config, ratelimit, storage, ws_asr, ws_chat, ws_tts
 from .dashscope_setup import bootstrap
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -98,8 +98,27 @@ def authcheck(session: str | None = Cookie(default=None, alias=auth.COOKIE_NAME)
 
 @app.post("/api/login")
 def login(request: Request, response: Response, payload: LoginPayload) -> dict:
+    if not auth.auth_enabled():
+        return {"ok": True}
+
+    key = ratelimit.client_key(request)
+    locked = ratelimit.LOGIN_LIMITER.locked_for(key)
+    if locked:
+        retry = int(locked) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"尝试次数过多，请 {int(locked) // 60 + 1} 分钟后再试",
+            headers={"Retry-After": str(retry)},
+        )
+
     if not auth.check_password(payload.password):
-        raise HTTPException(status_code=401, detail="密码错误")
+        count = ratelimit.LOGIN_LIMITER.fail(key)
+        left = max(0, ratelimit.LOGIN_LIMITER.limit - count)
+        if left:
+            raise HTTPException(status_code=401, detail=f"密码错误，还可尝试 {left} 次")
+        raise HTTPException(status_code=429, detail="尝试次数过多，请稍后再试")
+
+    ratelimit.LOGIN_LIMITER.reset(key)
     response.set_cookie(
         auth.COOKIE_NAME,
         auth.make_token(),
