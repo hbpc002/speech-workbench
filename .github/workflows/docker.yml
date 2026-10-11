@@ -22,7 +22,7 @@ env:
 
 jobs:
   test:
-    name: 冒烟测试
+    name: 测试
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +37,13 @@ jobs:
 
       - name: 单元测试
         run: python -m pytest tests -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 前端单元测试
+        run: node --test "tests/js/**/*.test.js"
 
       - name: 无密钥也能导入并启动
         env:

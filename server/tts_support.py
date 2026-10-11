@@ -7,6 +7,7 @@ repeat them. Audio goes out as binary frames; control messages go out as text.
 """
 
 import asyncio
+import math
 
 from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer
 
@@ -117,6 +118,11 @@ def normalize_params(params: dict | None) -> dict:
         try:
             value = float(params[name])
         except (TypeError, ValueError):
+            continue
+        # float() accepts "nan" and "inf" without raising, but int() below turns
+        # them into an uncaught ValueError/OverflowError, which surfaces as a
+        # 500 rather than the clamped-or-dropped result the caller expects.
+        if not math.isfinite(value):
             continue
         if name == "volume":
             out["volume"] = max(0, min(100, int(value)))

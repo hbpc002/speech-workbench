@@ -183,7 +183,6 @@
           <label class="inline">模型 <select id="tts-tag-model"></select></label>
           <label class="inline">密度 <select id="tts-tag-density"></select></label>
           <label class="inline"><input type="checkbox" id="tts-tag-rich"> 允许拟声标签</label>
-          <button type="button" class="ghost" id="tts-tag-undo" disabled>撤销</button>
         </div>
         <p class="muted tag-hint">点击插入到光标处。情感标签对其后所有文本生效，直到遇到下一个情感标签。</p>
       </div>
@@ -195,6 +194,8 @@
       <div class="controls btn-row">
         <button id="tts-generate">生成</button>
         <button class="ghost" id="tts-stop">停止</button>
+        <button class="ghost" id="tts-clear-text">清空文本</button>
+        <button class="ghost" id="tts-undo" disabled>撤销</button>
         <button class="ghost danger" id="tts-clear-history">清空历史</button>
         <span class="status" id="tts-status">未连接</span>
       </div>

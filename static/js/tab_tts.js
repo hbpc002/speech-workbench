@@ -20,12 +20,14 @@ import {
   splitSentences,
 } from '/static/js/audio.js';
 import { api, applySocketStatus, el, state } from '/static/js/app.js';
+import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { applyRules } from '/static/js/tag_rules.js';
 import { VOICEOVER_PROMPT } from '/static/js/voiceover_prompt.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
 const MODEL_STORAGE_KEY = 'tts.tagModel';
+const TEXT_UNDO_LIMIT = 20;   // a 2000-char script x 20 is still trivial to hold
 
 let socket = null;
 let player = null;
@@ -50,8 +52,10 @@ function currentParams() {
     pitch_rate: Number(el('tts-pitch').value),
   };
 
-  const seed = el('tts-seed').value.trim();
-  if (seed !== '') params.seed = Number(seed);
+  // Always sent, even when the field is left blank: resolveSeed picks one and
+  // records it, so "随机" means reproducible-by-recording rather than "whatever
+  // the model felt like this time".
+  params.seed = resolveSeed(el('tts-seed').value);
 
   const kind = el('tts-instruct-kind').value;
   if (kind === 'custom') {
@@ -169,11 +173,45 @@ function hasTags(text) {
   return allTags().some((tag) => text.includes(tag));
 }
 
-// ---- automatic tagging -----------------------------------------------------
+// ---- script text: AI tagging, local rules, undo ----------------------------
 
 /** What the dialog is currently previewing. */
 let pendingResult = null;
-let tagUndoStack = null;   // script text captured before the last AI apply
+
+// Undo covers every change this tab makes to the script box, not just the AI
+// one: applying tags, and clearing. A stack rather than a single slot, so
+// "tag, then clear" can be walked back one step at a time.
+let textUndo = [];
+
+function syncUndoButton() {
+  el('tts-undo').disabled = textUndo.length === 0;
+}
+
+function pushUndo(text) {
+  textUndo.push(text);
+  if (textUndo.length > TEXT_UNDO_LIMIT) textUndo.shift();
+  syncUndoButton();
+}
+
+function setScriptText(text) {
+  const textarea = el('tts-text');
+  textarea.value = text;
+  textarea.dispatchEvent(new Event('input'));
+}
+
+function undoText() {
+  if (!textUndo.length) return;
+  setScriptText(textUndo.pop());
+  syncUndoButton();
+}
+
+function clearText() {
+  const textarea = el('tts-text');
+  if (!textarea.value) return;
+  pushUndo(textarea.value);
+  setScriptText('');
+  textarea.focus();
+}
 
 function tagOptions() {
   return {
@@ -336,20 +374,10 @@ function applyTagResult() {
     return;
   }
 
-  tagUndoStack = textarea.value;
+  pushUndo(textarea.value);
   textarea.value = pendingResult.text;
   textarea.dispatchEvent(new Event('input'));
   closeTagDialog();
-  el('tts-tag-undo').disabled = false;
-}
-
-function undoTags() {
-  if (tagUndoStack === null) return;
-  const textarea = el('tts-text');
-  textarea.value = tagUndoStack;
-  tagUndoStack = null;
-  textarea.dispatchEvent(new Event('input'));
-  el('tts-tag-undo').disabled = true;
 }
 
 function openScriptDialog() {
@@ -459,12 +487,13 @@ function renderHistory() {
   }
 }
 
-function button(label, short, cls, handler, disabled) {
+function button(label, short, cls, handler, disabled, title) {
   const node = document.createElement('button');
   node.className = cls || 'ghost';
   node.textContent = label;
   node.dataset.short = short || label;
   node.disabled = Boolean(disabled);
+  if (title) node.title = title;
   node.addEventListener('click', handler);
   return node;
 }
@@ -490,7 +519,12 @@ function renderCard(record) {
   const voice = document.createElement('span');
   voice.className = 'hvoice';
   voice.textContent = voiceLabel(record.voice, record.model);
-  sub.append(voice, ` · ${record.model} · ${clockOf(record.createdAt)}`);
+  // The baseline seed: what the first pass used. Re-generations roll new seeds,
+  // which is what makes each attempt traceable.
+  const summary = ` · ${record.model} · ${clockOf(record.createdAt)}`;
+  sub.append(voice, record.params?.seed == null
+    ? summary
+    : `${summary} · 种子 ${record.params.seed}`);
 
   meta.append(title, sub);
 
@@ -564,7 +598,10 @@ function renderSentence(record, sentence, index) {
   const isBusy = busyRecord && busyRecord.id === record.id;
 
   actions.append(
-    button('重新生成', '重生', '', () => generateSentence(record, index), isBusy),
+    button('重新生成', '重生', '', () => generateSentence(record, index), isBusy, false,
+      sentence.seed == null
+        ? '换一个种子重新生成这一句'
+        : `本句种子 ${sentence.seed}，点击会换一个`),
     button('播放', '播放', 'ghost', () => playSentence(sentence), !sentence.pcm),
     button('下载', '下载', 'ghost', () => {
       saveBlobOne(pcmToWavBlob([sentence.pcm], SAMPLE_RATE), `语音-${index + 1}.wav`);
@@ -695,13 +732,17 @@ async function runSentence(record, index) {
   sentence.pcm = null;
   busyRecord = record;
   openIds.add(record.id);
+  // Re-generating reuses record.params verbatim, which would make the button a
+  // no-op: same seed plus same text gives byte-identical audio. A fresh seed
+  // per attempt is what "再来一条" actually means.
+  sentence.seed = nextSeed(record, sentence);
   renderHistory();
 
   active.send({
     type: 'tts.synthesize',
     text: sentence.text,
     voice: record.voice,
-    params: record.params,
+    params: { ...record.params, seed: sentence.seed },
   });
 
   await new Promise((resolve) => {
@@ -760,6 +801,9 @@ function createRecord() {
       chunks: [],
       status: 'idle',
       error: null,
+      // null == 还没生成过, so the first attempt takes the record's seed.
+      // Declared explicitly because this object goes through IndexedDB.
+      seed: null,
     });
   });
   return {
@@ -903,7 +947,8 @@ export function init() {
   el('tts-tag-ai').addEventListener('click', requestTags);
   el('tts-tag-fast').addEventListener('click', requestFastTags);
   el('tts-tag-write').addEventListener('click', openScriptDialog);
-  el('tts-tag-undo').addEventListener('click', undoTags);
+  el('tts-undo').addEventListener('click', undoText);
+  el('tts-clear-text').addEventListener('click', clearText);
   el('tts-ai-run').addEventListener('click', requestScript);
   el('tts-ai-close').addEventListener('click', closeTagDialog);
   el('tts-ai-cancel').addEventListener('click', closeTagDialog);
