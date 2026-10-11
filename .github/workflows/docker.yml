@@ -66,6 +66,22 @@ jobs:
           assert "sk-" not in repr(cfg), "public_config 泄漏了密钥"
           assert not config.API_KEY, "未设密钥时应为空"
           print("  密钥隔离正常")
+
+          # 上游报错原文会引用请求头，送到浏览器前必须脱敏。
+          import os
+          os.environ["DASHSCOPE_API_KEY"] = "sk-" + "a" * 32
+          from server import redact
+          import importlib
+          from server import config as cfg_mod
+          importlib.reload(cfg_mod)
+          leaked = [
+              "invalid Authorization header: Bearer sk-" + "a" * 32,
+              'invalid Authorization header: Bearer sk-' + "a" * 32 + "sk-" + "a" * 32,
+              "url: https://x/api?api_key=sk-" + "a" * 32,
+          ]
+          for text in leaked:
+              assert "sk-" not in redact.scrub(text), f"脱敏失败: {text}"
+          print("  错误脱敏正常")
           PY
 
   build:

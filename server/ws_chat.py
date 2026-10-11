@@ -17,7 +17,7 @@ import json
 import websockets
 from fastapi import WebSocket
 
-from . import config
+from . import config, redact
 
 REPLAY_TYPE = "client.replay"
 HISTORY_REPLAYED = "server.history_replayed"
@@ -124,8 +124,8 @@ async def handle(websocket: WebSocket) -> None:
             await asyncio.gather(_pump_browser(websocket, upstream), upstream_to_browser())
     except websockets.exceptions.InvalidStatus as exc:
         await _fail(websocket, f"DashScope 拒绝连接 (HTTP {exc.response.status_code})")
-    except Exception as exc:  # noqa: BLE001 - surfaced to the browser
-        await _fail(websocket, f"连接上游失败: {exc}")
+    except Exception as exc:  # noqa: BLE001 - message is scrubbed before sending
+        await _fail(websocket, f"连接上游失败: {redact.log_only('chat', exc)}")
 
 
 async def _replay(upstream, items: list[dict]) -> int:

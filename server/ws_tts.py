@@ -12,7 +12,7 @@ import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from . import config
+from . import config, redact
 from .tts_support import WebSocketSynthCallback, build_synthesizer
 
 
@@ -80,11 +80,11 @@ async def handle(websocket: WebSocket) -> None:
             await _synthesize(websocket, loop, text, voice, params)
     except WebSocketDisconnect:
         pass
-    except Exception as exc:  # noqa: BLE001 - surfaced to the browser
-        print(f"[tts] failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 - message is scrubbed before sending
+        print(f"[tts] failed: {type(exc).__name__}: {exc}")
         try:
             await websocket.send_text(
-                json.dumps({"type": "error", "error": {"message": str(exc)}})
+                json.dumps({"type": "error", "error": {"message": redact.scrub(exc)}})
             )
         except RuntimeError:
             pass
