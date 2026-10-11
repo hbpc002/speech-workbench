@@ -9,17 +9,25 @@ instead - see server/storage.py for the two backends.
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from . import config, storage
+from . import config, redact, storage
 
 router = APIRouter(prefix="/api/voices", tags=["voices"])
 
 # Matches the SDK constraint documented in the clone samples' docstring:
 # digits and lowercase letters only, less than 10 characters.
 PREFIX_PATTERN = re.compile(r"^[a-z0-9]{1,9}$")
+
+# The SDK's own connect timeout is 300 s, which is also Vercel's per-function
+# limit: one unreachable upstream turns into a 504 for the whole invocation.
+LIST_TIMEOUT_SECONDS = 20.0
+LIST_CACHE_SECONDS = 60.0
+_LIST_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 def _service() -> VoiceEnrollmentService:
@@ -30,16 +38,41 @@ def _service() -> VoiceEnrollmentService:
 
 @router.get("")
 def list_voices(prefix: str = "") -> dict:
-    """List enrolled voices, optionally narrowed to one prefix."""
+    """List enrolled voices, optionally narrowed to one prefix.
+
+    Cached briefly: this runs on every page load, and each miss is an outbound
+    call to DashScope. On a platform where that call can hang (Vercel observed
+    a 300 s connect timeout), an uncached endpoint burns the whole function
+    budget on every reload.
+    """
     service = _service()
+    cache_key = prefix or ""
+    cached = _LIST_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < LIST_CACHE_SECONDS:
+        return cached[1]
+
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        kwargs = {"page_index": 0, "page_size": 50}
-        if prefix:
-            kwargs["prefix"] = prefix
-        voices = service.list_voices(**kwargs)
-    except Exception as exc:  # noqa: BLE001 - reported to the operator
-        raise HTTPException(status_code=502, detail=f"查询音色列表失败: {exc}") from exc
-    return {"voices": voices, "request_id": service.get_last_request_id()}
+        voices = pool.submit(
+            service.list_voices, page_index=0, page_size=50, **({"prefix": prefix} if prefix else {})
+        ).result(timeout=LIST_TIMEOUT_SECONDS)
+    except FuturesTimeout:
+        raise HTTPException(
+            status_code=504,
+            detail=f"查询音色列表超时（{LIST_TIMEOUT_SECONDS}s），上游可能不可达",
+        ) from None
+    except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
+        raise HTTPException(
+            status_code=502, detail=f"查询音色列表失败: {redact.log_only('voices', exc)}"
+        ) from exc
+    finally:
+        # wait=False matters: the context manager would block on the hung
+        # worker and reintroduce the timeout we just enforced.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    payload = {"voices": voices, "request_id": service.get_last_request_id()}
+    _LIST_CACHE[cache_key] = (time.monotonic(), payload)
+    return payload
 
 
 ENROLL_ATTEMPTS = 3
