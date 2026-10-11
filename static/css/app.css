@@ -524,6 +524,67 @@ p.hint {
 
 .tag-hint { margin: 2px 0 0; font-size: 11.5px; }
 
+/* ---------- automatic tagging ---------- */
+
+.tag-actions,
+.tag-options {
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.tag-actions button { font-size: 12.5px; }
+
+.tag-options label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tag-options select {
+  max-width: 150px;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.ai-unsupported { font-size: 11.5px; }
+
+.ai-warnings {
+  margin: 0 0 10px;
+  padding: 8px 10px 8px 26px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.ai-warnings li { margin: 2px 0; }
+
+.ai-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.ai-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+#tts-ai-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--err);
+  border-radius: var(--radius);
+  color: var(--err);
+  font-size: 12.5px;
+}
+
+@media (max-width: 760px) {
+  .ai-compare { grid-template-columns: 1fr; }
+}
+
 /* ---------- tag help modal ---------- */
 
 .help-btn {

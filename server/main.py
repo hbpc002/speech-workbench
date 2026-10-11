@@ -15,7 +15,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import api_voices, auth, config, ratelimit, storage, ws_asr, ws_chat, ws_tts
+from . import (
+    api_tagger,
+    api_voices,
+    auth,
+    config,
+    ratelimit,
+    storage,
+    ws_asr,
+    ws_chat,
+    ws_tts,
+)
 from .dashscope_setup import bootstrap
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -140,6 +150,10 @@ def logout(response: Response) -> dict:
 # ---- voice cloning ---------------------------------------------------------
 
 app.include_router(api_voices.router, dependencies=[Depends(require_session)])
+
+# ---- automatic emotion tagging ----------------------------------------------
+
+app.include_router(api_tagger.router, dependencies=[Depends(require_session)])
 
 
 @app.get("/media/{name}")

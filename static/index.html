@@ -48,6 +48,49 @@
     </div>
   </dialog>
 
+  <dialog id="tts-ai" class="modal">
+    <div class="modal-head">
+      <h2 id="tts-ai-title">AI 加情感标签</h2>
+      <button type="button" class="ghost" id="tts-ai-close">关闭</button>
+    </div>
+
+    <div class="ai-step" id="tts-ai-form">
+      <div class="controls">
+        <label class="grow">主题 <input type="text" id="tts-ai-topic" placeholder="例如：露营装备清单"></label>
+        <label>时长 <input type="text" id="tts-ai-duration" value="60 秒" style="width:90px"></label>
+      </div>
+      <div class="controls">
+        <label class="grow">语气 <input type="text" id="tts-ai-tone" value="亲切自然"></label>
+        <label class="grow">目标听众 <input type="text" id="tts-ai-audience" placeholder="例如：宝妈"></label>
+      </div>
+      <p class="muted">稿子会带着情感标签一起写好，直接落到文本框。</p>
+      <div class="modal-foot">
+        <button id="tts-ai-run">生成</button>
+        <button class="ghost" id="tts-ai-cancel">取消</button>
+      </div>
+    </div>
+
+    <div class="ai-step" id="tts-ai-result" hidden>
+      <p class="muted" id="tts-ai-summary"></p>
+      <ul class="ai-warnings" id="tts-ai-warnings" hidden></ul>
+      <div class="ai-compare" id="tts-ai-compare" hidden>
+        <div class="ai-col">
+          <span class="tag-label">原文</span>
+          <textarea id="tts-ai-before" class="prompt-box" readonly rows="10"></textarea>
+        </div>
+        <div class="ai-col">
+          <span class="tag-label">标注后</span>
+          <textarea id="tts-ai-after" class="prompt-box" readonly rows="10"></textarea>
+        </div>
+      </div>
+      <p class="muted" id="tts-ai-error" hidden></p>
+      <div class="modal-foot">
+        <button id="tts-ai-apply">应用到文本框</button>
+        <button class="ghost" id="tts-ai-back">返回</button>
+      </div>
+    </div>
+  </dialog>
+
   <main>
     <!-- 1. realtime chat -->
     <section class="panel active" data-panel="chat">
@@ -129,6 +172,18 @@
         <div class="tag-row">
           <span class="tag-label">拟声</span>
           <div class="tag-chips" id="tts-rich-tags"></div>
+        </div>
+        <div class="tag-row tag-actions">
+          <button type="button" id="tts-tag-ai">AI 加情感标签</button>
+          <button type="button" class="ghost" id="tts-tag-fast">快速标注</button>
+          <button type="button" class="ghost" id="tts-tag-write">AI 写口播稿</button>
+          <span class="muted ai-unsupported" id="tts-tag-note" hidden></span>
+        </div>
+        <div class="tag-row tag-options">
+          <label class="inline">模型 <select id="tts-tag-model"></select></label>
+          <label class="inline">密度 <select id="tts-tag-density"></select></label>
+          <label class="inline"><input type="checkbox" id="tts-tag-rich"> 允许拟声标签</label>
+          <button type="button" class="ghost" id="tts-tag-undo" disabled>撤销</button>
         </div>
         <p class="muted tag-hint">点击插入到光标处。情感标签对其后所有文本生效，直到遇到下一个情感标签。</p>
       </div>

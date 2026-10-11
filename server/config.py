@@ -42,6 +42,39 @@ def _env(*names, default=None):
     return default
 
 
+def _env_int(*names, default):
+    try:
+        return int(_env(*names, default=default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(*names, default):
+    try:
+        return float(_env(*names, default=default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _parse_models(raw: str) -> list[dict]:
+    """Parse `id:显示名,id:显示名` into `{"id", "name"}` pairs.
+
+    The id is what actually gets sent upstream; the name only labels the picker
+    in the browser. A chunk without a colon is used as both, so `LLM_MODELS`
+    can be a bare list of ids when the ids are readable enough.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for chunk in (raw or "").split(","):
+        model_id, _, name = chunk.strip().partition(":")
+        model_id = model_id.strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append({"id": model_id, "name": name.strip() or model_id})
+    return out
+
+
 # ---- credentials -----------------------------------------------------------
 
 API_KEY = _env("DASHSCOPE_API_KEY", "REALTIME_API_KEY")
@@ -126,6 +159,44 @@ REALTIME_VAD_MODES = ["server_vad", "smart_turn"]
 SILENCE_DURATIONS = [600, 1000, 1200, 1500, 2000]
 
 
+# ---- 文本标注用的 LLM -------------------------------------------------------
+#
+# 任意 OpenAI 兼容端点：百炼 compatible-mode、DeepSeek、Kimi、GLM、OpenRouter、
+# one-api 聚合网关、自建 vLLM 都可以。默认指向百炼的兼容模式，所以不配任何东西
+# 时也能直接用现有的 DASHSCOPE_API_KEY。换厂商只改下面三项，前后端代码不动。
+#
+# 刻意走裸 HTTP 而不是 dashscope.Generation：那个 SDK 只会打百炼。
+LLM_BASE_URL = _env(
+    "LLM_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"
+).rstrip("/")
+
+# 可以和语音服务用不同的 Key。不设时复用 DASHSCOPE_API_KEY。
+LLM_API_KEY = _env("LLM_API_KEY", default=API_KEY)
+
+# "id:显示名,id:显示名"，显示名只给前端下拉用，id 才是发给上游的。
+LLM_MODELS = _parse_models(_env("LLM_MODELS", default="qwen-turbo:快速,qwen-plus:均衡"))
+LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")
+
+# SDK 默认 300s 太长：Vercel 的函数上限正好也是 300s，一个卡住的上游会把整个
+# 函数的预算耗光。自己卡到 60s。
+LLM_TIMEOUT_SECONDS = _env_int("LLM_TIMEOUT_SECONDS", default=60)
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", default=3000)
+LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", default=0.3)
+
+# 一次标注的输入上限。超长文本既慢又贵，超了就让用户分段。
+TAGS_MAX_CHARS = _env_int("TAGS_MAX_CHARS", default=2000)
+
+TAGS_DENSITIES = [
+    {"id": "sparse", "name": "稀疏"},
+    {"id": "normal", "name": "适中"},
+    {"id": "dense", "name": "密集"},
+]
+
+TAGS_LIMIT_MAX_ATTEMPTS = _env_int("TAGS_LIMIT_MAX_ATTEMPTS", default=20)
+TAGS_LIMIT_WINDOW_SECONDS = _env_int("TAGS_LIMIT_WINDOW_SECONDS", default=60)
+TAGS_LIMIT_LOCKOUT_SECONDS = _env_int("TAGS_LIMIT_LOCKOUT_SECONDS", default=120)
+
+
 def realtime_base_url() -> str:
     """WebSocket endpoint for the qwen-audio realtime model."""
     explicit = _env("FUN_REALTIME_BASE_URL")
@@ -160,6 +231,18 @@ def public_config() -> dict:
         "control_tags": voices.CONTROL_TAGS,
         "rich_tags": voices.RICH_TAGS,
         "tag_models": sorted(voices.TAG_MODELS),
+        # Only ids and display names: LLM_API_KEY and LLM_BASE_URL must never
+        # reach the browser, the former because it is a credential and the
+        # latter because a self-hosted vLLM origin is not public information.
+        "llm": {
+            "models": LLM_MODELS,
+            "default_model": LLM_MODEL,
+            "configured": bool(LLM_API_KEY),
+        },
+        "tags": {
+            "max_chars": TAGS_MAX_CHARS,
+            "densities": TAGS_DENSITIES,
+        },
         "realtime_voices": REALTIME_VOICES,
         "realtime_vad_modes": REALTIME_VAD_MODES,
         "silence_durations": SILENCE_DURATIONS,

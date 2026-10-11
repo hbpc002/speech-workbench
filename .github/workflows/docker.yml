@@ -33,7 +33,10 @@ jobs:
           cache: pip
 
       - name: 安装依赖
-        run: pip install -e .
+        run: pip install -e ".[dev]"
+
+      - name: 单元测试
+        run: python -m pytest tests -q
 
       - name: 无密钥也能导入并启动
         env:
@@ -43,18 +46,14 @@ jobs:
           from server.main import app
           from server import config
 
-          def walk(routes):
-              for r in routes:
-                  p = getattr(r, "path", None)
-                  if p:
-                      yield p
-                  yield from walk(getattr(r, "routes", None) or [])
-
-          paths = set(walk(app.routes))
+          # Included routers are wrapped rather than flattened into app.routes,
+          # so the OpenAPI schema is the reliable place to look for HTTP routes.
+          # WebSockets do not appear there, so they are checked separately.
+          http_paths = set(app.openapi()["paths"])
           need = {"/ws/chat", "/ws/asr", "/ws/tts", "/healthz", "/api/config"}
-          missing = need - paths
+          missing = need - http_paths
           assert not missing, f"缺少路由: {missing}"
-          print(f"  路由齐全，共 {len(paths)} 条")
+          print(f"  路由齐全，共 {len(http_paths)} 条 HTTP 路由")
 
           # 目录数据要能序列化给浏览器
           cfg = config.public_config()
@@ -70,6 +69,7 @@ jobs:
           # 上游报错原文会引用请求头，送到浏览器前必须脱敏。
           import os
           os.environ["DASHSCOPE_API_KEY"] = "sk-" + "a" * 32
+          os.environ["LLM_API_KEY"] = "sk-b" * 20
           from server import redact
           import importlib
           from server import config as cfg_mod
@@ -78,6 +78,8 @@ jobs:
               "invalid Authorization header: Bearer sk-" + "a" * 32,
               'invalid Authorization header: Bearer sk-' + "a" * 32 + "sk-" + "a" * 32,
               "url: https://x/api?api_key=sk-" + "a" * 32,
+              # 语音服务和文本标注是两个不同的凭据，两个都要脱敏
+              "upstream said: Bearer " + "sk-b" * 20,
           ]
           for text in leaked:
               assert "sk-" not in redact.scrub(text), f"脱敏失败: {text}"

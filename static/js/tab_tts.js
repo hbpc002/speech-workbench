@@ -19,11 +19,13 @@ import {
   segmentKey,
   splitSentences,
 } from '/static/js/audio.js';
-import { applySocketStatus, el, state } from '/static/js/app.js';
+import { api, applySocketStatus, el, state } from '/static/js/app.js';
+import { applyRules } from '/static/js/tag_rules.js';
 import { VOICEOVER_PROMPT } from '/static/js/voiceover_prompt.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
+const MODEL_STORAGE_KEY = 'tts.tagModel';
 
 let socket = null;
 let player = null;
@@ -99,8 +101,6 @@ function insertTag(tag) {
   const caret = start + tag.length;
   textarea.focus();
   textarea.setSelectionRange(caret, caret);
-  // Keep the sentence list in step with the edit.
-  syncSegmentsFromText();
 }
 
 function renderTagChips() {
@@ -167,6 +167,220 @@ function stripTags(text) {
 
 function hasTags(text) {
   return allTags().some((tag) => text.includes(tag));
+}
+
+// ---- automatic tagging -----------------------------------------------------
+
+/** What the dialog is currently previewing. */
+let pendingResult = null;
+let tagUndoStack = null;   // script text captured before the last AI apply
+
+function tagOptions() {
+  return {
+    model: el('tts-tag-model').value,
+    density: el('tts-tag-density').value || 'normal',
+    allow_rich: el('tts-tag-rich').checked,
+  };
+}
+
+function renderTagOptions() {
+  const tagger = state.config.llm || {};
+  const models = tagger.models || [];
+  const densities = (state.config.tags?.densities) || [];
+
+  const fill = (node, items, selected) => {
+    node.innerHTML = '';
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name;
+      node.appendChild(option);
+    }
+    if (selected && items.some((item) => item.id === selected)) node.value = selected;
+  };
+
+  let preferred = '';
+  try {
+    preferred = localStorage.getItem(MODEL_STORAGE_KEY) || '';
+  } catch (_) {
+    /* private mode; the server default is fine */
+  }
+  fill(el('tts-tag-model'), models, preferred || tagger.default_model || '');
+  fill(el('tts-tag-density'), densities, 'normal');
+}
+
+function aiConfigured() {
+  // Absent `llm` means the server predates this feature; treat it as
+  // unconfigured rather than letting the button hit a 404.
+  const tagger = state.config.llm;
+  return !!(tagger && tagger.configured);
+}
+
+function closeTagDialog() {
+  const dialog = el('tts-ai');
+  if (dialog.open) dialog.close();
+  pendingResult = null;
+}
+
+/** showModal() throws if the dialog is already up, which 返回 would otherwise hit. */
+function showTagDialog() {
+  const dialog = el('tts-ai');
+  if (!dialog.open) dialog.showModal();
+}
+
+/** Open the dialog on the loading screen, then fill it once `promise` settles. */
+async function withLoading(title, promise) {
+  el('tts-ai-title').textContent = title;
+  el('tts-ai-form').hidden = true;
+  el('tts-ai-result').hidden = false;
+  el('tts-ai-compare').hidden = true;
+  el('tts-ai-warnings').hidden = true;
+  const error = el('tts-ai-error');
+  error.hidden = true;
+  el('tts-ai-summary').textContent = '模型正在处理…';
+  showTagDialog();
+
+  try {
+    showResult(await promise);
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message || String(err);
+    el('tts-ai-summary').textContent = '';
+  }
+}
+
+function showResult(payload) {
+  pendingResult = payload;
+  el('tts-ai-summary').textContent = `已插入 ${payload.inserted} 个标签`;
+
+  const warnings = el('tts-ai-warnings');
+  warnings.innerHTML = '';
+  const list = payload.warnings || [];
+  warnings.hidden = list.length === 0;
+  for (const item of list) {
+    const li = document.createElement('li');
+    li.textContent = item;
+    warnings.appendChild(li);
+  }
+
+  // Script mode invents the text, so there is no "before" to compare against.
+  const compare = el('tts-ai-compare');
+  compare.hidden = !payload.before;
+  el('tts-ai-before').value = payload.before || '';
+  el('tts-ai-after').value = payload.text || '';
+}
+
+function tagStatus(message) {
+  el('tts-status').textContent = message;
+  el('tts-status').className = 'status err';
+}
+
+async function requestTags() {
+  const text = el('tts-text').value.trim();
+  if (!text) {
+    tagStatus('请先输入文本');
+    return;
+  }
+  const options = tagOptions();
+  await withLoading('AI 加情感标签', api('/api/tts/tag', {
+    method: 'POST',
+    body: JSON.stringify({ text, ...options }),
+  }).then((body) => ({ ...body, before: text })));
+}
+
+async function requestScript() {
+  const topic = el('tts-ai-topic').value.trim();
+  if (!topic) {
+    el('tts-ai-error').hidden = false;
+    el('tts-ai-error').textContent = '请填写主题';
+    return;
+  }
+  const options = tagOptions();
+  await withLoading('AI 写口播稿', api('/api/tts/script', {
+    method: 'POST',
+    body: JSON.stringify({
+      topic,
+      duration: el('tts-ai-duration').value.trim(),
+      tone: el('tts-ai-tone').value.trim(),
+      audience: el('tts-ai-audience').value.trim(),
+      ...options,
+    }),
+  }).then((body) => ({ ...body, before: '' })));
+}
+
+/** The offline path: same preview, no network. */
+function requestFastTags() {
+  const text = el('tts-text').value;
+  if (!text.trim()) {
+    tagStatus('请先输入文本');
+    return;
+  }
+  const { density, allow_rich: allowRich } = tagOptions();
+  const { text: tagged, inserted } = applyRules(text, splitSentences(text), density, allowRich);
+  el('tts-ai-title').textContent = '快速标注';
+  el('tts-ai-form').hidden = true;
+  el('tts-ai-result').hidden = false;
+  el('tts-ai-error').hidden = true;
+  showTagDialog();
+  showResult({ text: tagged, before: text, inserted, warnings: [] });
+}
+
+function applyTagResult() {
+  if (!pendingResult) return;
+  const textarea = el('tts-text');
+  // The model may have been switched while the dialog was open, in which case
+  // the tags would be read aloud verbatim.
+  if (!tagModelActive()) {
+    closeTagDialog();
+    tagStatus('当前模型不支持情感标签，未应用');
+    return;
+  }
+
+  tagUndoStack = textarea.value;
+  textarea.value = pendingResult.text;
+  textarea.dispatchEvent(new Event('input'));
+  closeTagDialog();
+  el('tts-tag-undo').disabled = false;
+}
+
+function undoTags() {
+  if (tagUndoStack === null) return;
+  const textarea = el('tts-text');
+  textarea.value = tagUndoStack;
+  tagUndoStack = null;
+  textarea.dispatchEvent(new Event('input'));
+  el('tts-tag-undo').disabled = true;
+}
+
+function openScriptDialog() {
+  el('tts-ai-title').textContent = 'AI 写口播稿';
+  el('tts-ai-form').hidden = false;
+  el('tts-ai-result').hidden = true;
+  el('tts-ai-error').hidden = true;
+  showTagDialog();
+  el('tts-ai-topic').focus();
+}
+
+/** Grey out the AI buttons when no provider is configured or tags are moot. */
+function syncTagActions() {
+  const supported = tagModelActive();
+  const ready = supported && aiConfigured();
+  for (const id of ['tts-tag-ai', 'tts-tag-write']) {
+    el(id).disabled = !ready;
+  }
+  // The local rules need no provider, so only the tag support matters.
+  el('tts-tag-fast').disabled = !supported;
+
+  const note = el('tts-tag-note');
+  if (!supported) {
+    note.hidden = false;
+    note.textContent = '当前模型不支持情感标签';
+  } else if (!aiConfigured()) {
+    note.hidden = false;
+    note.textContent = '未配置 LLM_API_KEY，AI 功能不可用';
+  } else {
+    note.hidden = true;
+  }
 }
 
 // ---- help dialog ---------------------------------------------------------
@@ -686,6 +900,24 @@ export function init() {
   el('tag-help-close').addEventListener('click', () => el('tag-help').close());
   el('tag-help-copy').addEventListener('click', copyTagHelp);
 
+  el('tts-tag-ai').addEventListener('click', requestTags);
+  el('tts-tag-fast').addEventListener('click', requestFastTags);
+  el('tts-tag-write').addEventListener('click', openScriptDialog);
+  el('tts-tag-undo').addEventListener('click', undoTags);
+  el('tts-ai-run').addEventListener('click', requestScript);
+  el('tts-ai-close').addEventListener('click', closeTagDialog);
+  el('tts-ai-cancel').addEventListener('click', closeTagDialog);
+  el('tts-ai-apply').addEventListener('click', applyTagResult);
+  el('tts-ai-back').addEventListener('click', openScriptDialog);
+
+  el('tts-tag-model').addEventListener('change', (event) => {
+    try {
+      localStorage.setItem(MODEL_STORAGE_KEY, event.target.value);
+    } catch (_) {
+      /* private mode; the choice just will not persist */
+    }
+  });
+
   for (const [id, out, digits] of [
     ['tts-rate', 'tts-rate-out', 2],
     ['tts-pitch', 'tts-pitch-out', 2],
@@ -701,8 +933,13 @@ export function init() {
   }
 
   refreshInstructionOptions();
+  renderTagOptions();
   // Tag availability is model-specific, so re-render when the model changes.
-  window.addEventListener('tts-model-changed', renderTagChips);
+  window.addEventListener('tts-model-changed', () => {
+    renderTagChips();
+    syncTagActions();
+  });
   renderTagChips();
+  syncTagActions();
   loadHistory();
 }

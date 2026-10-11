@@ -22,7 +22,7 @@ from . import config
 MAX_TRACKED = 10_000
 
 
-class LoginLimiter:
+class SlidingWindowLimiter:
     """Count consecutive failures per key, then lock that key out for a while."""
 
     def __init__(self, limit: int, window: float, lockout: float) -> None:
@@ -103,8 +103,22 @@ def client_key(request) -> str:
 
 
 # Module-level so all requests share one table.
-LOGIN_LIMITER = LoginLimiter(
+LOGIN_LIMITER = SlidingWindowLimiter(
     limit=config.LOGIN_MAX_ATTEMPTS,
     window=config.LOGIN_WINDOW_SECONDS,
     lockout=config.LOGIN_LOCKOUT_SECONDS,
 )
+
+# The text-tagging endpoints burn upstream tokens on every call, so they need a
+# ceiling of their own rather than sharing the (much looser) login budget.
+# Unlike login attempts this counts every call, successful or not: the cost is
+# incurred either way, and counting failures only would let a tight retry loop
+# spend without bound.
+TAGGER_LIMITER = SlidingWindowLimiter(
+    limit=config.TAGS_LIMIT_MAX_ATTEMPTS,
+    window=config.TAGS_LIMIT_WINDOW_SECONDS,
+    lockout=config.TAGS_LIMIT_LOCKOUT_SECONDS,
+)
+
+# Kept because the login flow reads more clearly under its original name.
+LoginLimiter = SlidingWindowLimiter

@@ -33,8 +33,15 @@ def scrub(text: object) -> str:
             out = pattern.sub(lambda m: m.group(1) + "***", out)
         else:
             out = pattern.sub("***", out)
-    # The configured key may be an odd format the patterns above miss.
-    for secret in (config.API_KEY, config.BLOB_TOKEN, config.WORKSPACE_ID):
+    # The configured keys may be in an odd format the patterns above miss. The
+    # speech key and the LLM key are separate credentials: without listing both
+    # here, switching LLM_BASE_URL to another provider leaks the second one.
+    for secret in (
+        config.API_KEY,
+        config.LLM_API_KEY,
+        config.BLOB_TOKEN,
+        config.WORKSPACE_ID,
+    ):
         if secret and len(secret) >= 8:
             out = out.replace(secret, "***")
     if len(out) > MAX_LEN:
