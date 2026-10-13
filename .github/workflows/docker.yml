@@ -55,12 +55,30 @@ jobs:
 
           # Included routers are wrapped rather than flattened into app.routes,
           # so the OpenAPI schema is the reliable place to look for HTTP routes.
-          # WebSockets do not appear there, so they are checked separately.
+          # WebSockets do not appear there, so they are checked against app.routes.
           http_paths = set(app.openapi()["paths"])
-          need = {"/ws/chat", "/ws/asr", "/ws/tts", "/healthz", "/api/config"}
+          need = {"/healthz", "/api/config", "/api/voices", "/media/{name}"}
           missing = need - http_paths
-          assert not missing, f"缺少路由: {missing}"
-          print(f"  路由齐全，共 {len(http_paths)} 条 HTTP 路由")
+          assert not missing, f"缺少 HTTP 路由: {missing}"
+          ws_paths = {r.path for r in app.routes if getattr(r, "path", "").startswith("/ws/")}
+          need_ws = {"/ws/chat", "/ws/asr", "/ws/tts"}
+          missing_ws = need_ws - ws_paths
+          assert not missing_ws, f"缺少 WebSocket 路由: {missing_ws}"
+          print(f"  路由齐全，共 {len(http_paths)} 条 HTTP + {len(ws_paths)} 条 WS")
+
+          # 声音复刻只有这一个功能依赖存储后端，配错了不会在启动时炸，
+          # 而是等用户点了才失败，所以自检必须真的会说话。
+          # 直接改属性而不是设环境变量：config 在 import 期就读完了 .env，
+          # 本地残留的 .env 会让这个断言随环境变。
+          from server import config as cfg_mod, storage
+          cfg_mod.STORAGE_BACKEND = "local"
+          cfg_mod.PUBLIC_BASE_URL = ""
+          problem = storage.check()
+          assert problem and "PUBLIC_BASE_URL" in problem, \
+              "未配 PUBLIC_BASE_URL 时 storage.check() 应当报出问题"
+          cfg_mod.PUBLIC_BASE_URL = "https://app.example"
+          assert storage.check() is None, "配置齐全时不该报错"
+          print("  存储自检正常")
 
           # 目录数据要能序列化给浏览器
           cfg = config.public_config()

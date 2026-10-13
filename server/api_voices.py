@@ -140,8 +140,10 @@ async def create_voice(
 
     try:
         voice_id, request_id = _create_voice(public_url, prefix, target_model)
-    except Exception as exc:  # noqa: BLE001 - reported to the operator
-        raise HTTPException(status_code=502, detail=f"音色复刻失败: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
+        raise HTTPException(
+            status_code=502, detail=f"音色复刻失败: {redact.log_only('voices.enroll', exc)}"
+        ) from exc
     finally:
         # Deliberately not deleting the clip here: DashScope fetches the sample
         # asynchronously, after create_voice has returned. Expiry-based purging
@@ -155,6 +157,8 @@ async def create_voice(
 def delete_voice(voice_id: str) -> dict:
     try:
         _service().delete_voice(voice_id)
-    except Exception as exc:  # noqa: BLE001 - reported to the operator
-        raise HTTPException(status_code=502, detail=f"删除音色失败: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
+        raise HTTPException(
+            status_code=502, detail=f"删除音色失败: {redact.log_only('voices.delete', exc)}"
+        ) from exc
     return {"deleted": voice_id}

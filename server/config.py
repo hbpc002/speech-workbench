@@ -105,9 +105,12 @@ LOGIN_LOCKOUT_SECONDS = int(_env("LOGIN_LOCKOUT_SECONDS", default=900))
 # so Vercel uploads to Blob instead.
 PUBLIC_BASE_URL = _env("PUBLIC_BASE_URL", default="").rstrip("/")
 
-BLOB_TOKEN = _env("BLOB_READ_WRITE_TOKEN")
+# Vercel Blob 的 token 有两个变量名，官方 SDK 两个都认，两个都读省事。
+BLOB_TOKEN = _env("BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_READ_WRITE_TOKEN")
 
-# "auto" picks vercel-blob when BLOB_TOKEN is set, otherwise local disk.
+# "auto" picks Vercel Blob when BLOB_TOKEN is set or the app runs on Vercel,
+# otherwise local disk. Note this decides the backend, not whether the backend
+# actually works -- server/storage.py check() is what verifies that.
 STORAGE_BACKEND = _env("STORAGE_BACKEND", default="auto")
 
 VOICE_CLONE_MODELS = ["cosyvoice-v3-flash", "qwen-audio-3.0-tts-flash", "qwen-audio-3.0-tts-plus"]

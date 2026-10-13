@@ -110,8 +110,8 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 | `DASHSCOPE_API_KEY` | 必填 |
 | `APP_PASSWORD` | 访问密码，留空关闭鉴权 |
 | `SESSION_SECRET` | 签名会话 Cookie |
-| `PUBLIC_BASE_URL` | 部署后的公网地址，声音复刻必填 |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob，Vercel 部署时需要 |
+| `PUBLIC_BASE_URL` | 部署后的公网地址，`local` 存储（Render/Docker/本地）下声音复刻必填 |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob 读写 token。在 Vercel 上把 Blob store 通过 **Connect to Project** 连到项目后自动注入，无需手动添加 |
 | `DASHSCOPE_WORKSPACE_ID` | 可选，工作空间专属模型才需要 |
 
 ## License

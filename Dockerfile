@@ -7,14 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir \
-      "dashscope>=1.25.0" \
-      "fastapi>=0.137" \
-      "uvicorn[standard]>=0.49" \
-      "python-multipart>=0.0.20" \
-      "websockets>=12.0"
-
 COPY server/ ./server/
+# 依赖装 pyproject，不在这里手抄一遍。手抄过一次，漏掉了 server/llm.py 直接
+# import 的 requests 和 Vercel 声音复刻要用的 vercel，只靠传递依赖侥幸能跑。
+# 改依赖只改 pyproject 一处。
+RUN pip install --no-cache-dir .
+
 COPY static/ ./static/
 
 # Render injects PORT; fall back to 8080 locally.

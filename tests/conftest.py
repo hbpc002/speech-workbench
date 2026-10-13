@@ -23,6 +23,12 @@ def deterministic_config(monkeypatch):
     )
     monkeypatch.setattr(config, "LLM_MODEL", "fast")
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 5)
+    # Storage too: a developer's .env normally carries a real PUBLIC_BASE_URL
+    # (often a tunnel) and sometimes a Blob token, both of which would silently
+    # decide which backend the storage tests exercise.
+    monkeypatch.setattr(config, "PUBLIC_BASE_URL", "")
+    monkeypatch.setattr(config, "BLOB_TOKEN", None)
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "auto")
     yield
 
 

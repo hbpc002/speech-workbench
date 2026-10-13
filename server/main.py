@@ -47,6 +47,11 @@ async def lifespan(_: FastAPI):
     bootstrap()
     storage.purge_local()
     print(f"[boot] storage backend: {storage.backend()}")
+    # 声音复刻是唯一依赖存储后端的功能。配错了不会在启动时炸，而是等用户点了
+    # 「复刻」才返回一个看不懂的报错，所以在这里就说清楚。
+    storage_problem = storage.check()
+    if storage_problem:
+        print(f"[boot] WARNING: {storage_problem}")
     if not config.API_KEY:
         print("[boot] WARNING: DASHSCOPE_API_KEY is not set, requests will fail")
     yield
@@ -83,11 +88,13 @@ def require_session(session: str | None = Cookie(default=None, alias=auth.COOKIE
 
 @app.get("/healthz")
 def healthz() -> dict:
+    # 无鉴权端点，所以只回报布尔值：缺了什么会写进启动日志，不在这里抖出去。
     return {
         "status": "ok",
         "auth_enabled": auth.auth_enabled(),
         "has_api_key": bool(config.API_KEY),
         "storage": storage.backend(),
+        "storage_ok": storage.check() is None,
     }
 
 

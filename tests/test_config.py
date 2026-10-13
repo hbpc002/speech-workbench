@@ -42,6 +42,52 @@ class TestEnvCoercion:
         assert config._env_int("TAGS_TEST_INT", default=7) == 12
 
 
+class TestResolveStorageBackend:
+    """The backend decides whether voice cloning works at all.
+
+    Regression: every Vercel deployment resolved to "blob" regardless of whether
+    the Blob SDK or a token was present, so cloning failed on the user's click
+    with an import error instead of at deploy time.
+    """
+
+    def test_auto_falls_back_to_local(self, monkeypatch):
+        monkeypatch.delenv("VERCEL", raising=False)
+        assert config.resolve_storage_backend() == "local"
+
+    def test_auto_prefers_blob_when_a_token_is_set(self, monkeypatch):
+        monkeypatch.delenv("VERCEL", raising=False)
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        assert config.resolve_storage_backend() == "blob"
+
+    def test_auto_prefers_blob_on_vercel(self, monkeypatch):
+        # The env var, not the platform SDK, is what we key off.
+        monkeypatch.setattr(config, "BLOB_TOKEN", None)
+        monkeypatch.setenv("VERCEL", "1")
+        assert config.resolve_storage_backend() == "blob"
+
+    def test_explicit_setting_wins_over_everything(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "local")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setenv("VERCEL", "1")
+        assert config.resolve_storage_backend() == "local"
+
+    def test_explicit_blob_is_honoured_off_vercel(self, monkeypatch):
+        monkeypatch.delenv("VERCEL", raising=False)
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        assert config.resolve_storage_backend() == "blob"
+
+    def test_render_is_not_treated_as_vercel(self, monkeypatch):
+        # Render runs local storage via render.yaml; it must not be pulled to
+        # blob just because some other platform variable is set.
+        monkeypatch.delenv("VERCEL", raising=False)
+        monkeypatch.setenv("RENDER", "1")
+        assert config.resolve_storage_backend() == "local"
+
+    def test_public_base_url_has_no_trailing_slash(self):
+        # _put_local concatenates "/media/{name}" onto it directly.
+        assert not config.PUBLIC_BASE_URL.endswith("/")
+
+
 class TestPublicConfig:
     def test_publishes_llm_model_ids_but_not_the_key(self):
         payload = config.public_config()
@@ -60,6 +106,13 @@ class TestPublicConfig:
         # /healthz is unauthenticated and a self-hosted vLLM origin is not
         # public information.
         assert config.LLM_BASE_URL not in repr(config.public_config())
+
+    def test_never_contains_storage_secrets(self, monkeypatch):
+        # A Blob token written into an upstream error would be scrubbed by
+        # redact, but it has no business being in a config payload at all.
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_secretvalue")
+        monkeypatch.setattr(config, "PUBLIC_BASE_URL", "https://internal.example")
+        assert config.BLOB_TOKEN not in repr(config.public_config())
 
     def test_publishes_tag_limits(self):
         payload = config.public_config()

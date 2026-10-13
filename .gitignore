@@ -4,3 +4,5 @@ __pycache__/
 .env
 .vercel
 *.egg-info/
+build/
+dist/

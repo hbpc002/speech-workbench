@@ -13,14 +13,20 @@ dependencies = [
     # than through a vendor SDK. Already present as a dashscope dependency, but
     # declared here because it is now imported by our own code.
     "requests>=2.32",
+    # Vercel Blob 后端（声音复刻在 Vercel 上的唯一可用路径）。必须是主依赖，
+    # 不能放 optional 里：Vercel 的 Python 构建器只装 [project.dependencies]，
+    # 放 extra 的话一键部署出来的声音复刻 100% 报「vercel-blob is required」。
+    #
+    # 这是 Vercel 官方 SDK（pip install vercel），不是 PyPI 上那个同名的个人
+    # 封装 vercel-blob。0.11.6 的凭据链只有「显式 token → BLOB_READ_WRITE_TOKEN
+    # → VERCEL_BLOB_READ_WRITE_TOKEN」，没有 OIDC，所以在 Vercel 上仍然必须把
+    # Blob store 连到项目（Connect to Project）才会注入 token。
+    "vercel>=0.11.6",
 ]
 
 [project.optional-dependencies]
 # Needed only to run the test suite.
 dev = ["pytest>=8.0"]
-# Only needed when deploying to Vercel, where enrollment clips go to Blob.
-# Latest release is 0.4.2; there is no 0.27.x — the series runs 0.2 -> 0.3 -> 0.4.
-vercel = ["vercel-blob>=0.4.2"]
 
 [tool.vercel]
 # Vercel 要求 module:variable 格式，不是文件路径。
