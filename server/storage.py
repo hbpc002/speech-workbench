@@ -70,6 +70,26 @@ _NO_VERCEL_SDK = (
     "选择了 blob 存储但没装 vercel 依赖，请执行 `pip install vercel`；"
     "或改用 STORAGE_BACKEND=local 并同时配置 PUBLIC_BASE_URL。"
 )
+# store 的 access 是建的时候定的，建完不能改（CLI 只有 create-store，没有
+# update-access），所以只能重建。私有 store 的 URL 必须鉴权才能读，而阿里云
+# 下载复刻样本时不带任何凭据 —— 私有 store 在这里没有可用的绕法。
+_PRIVATE_STORE = (
+    "Vercel Blob store 是私有的（private），声音复刻用不了：阿里云下载复刻样本时"
+    "不带任何凭据，而私有 store 的 URL 必须鉴权才能访问。"
+    "access 在建 store 时就定死了、改不了，请删掉重建一个 Public 的 —— "
+    "控制台 Storage → Create Storage → Blob → Continue → access 选 Public，"
+    "再到 store 的 Projects 页 Connect to Project；"
+    "命令行则是 `vercel blob create-store speech-clone --access public`。"
+)
+
+
+def _is_private_store_error(exc: BaseException) -> bool:
+    """识别「往私有 store 传了 public」。
+
+    SDK 没有为它单独定义异常类，错误原文是 Vercel 服务端返回的，只能按文本匹配。
+    匹配片段取得足够窄，免得把别的 403 也当成配置问题。
+    """
+    return "private store" in str(exc).lower()
 
 
 def _check_local() -> str | None:
@@ -140,6 +160,11 @@ async def _put_blob(wav_bytes: bytes, suffix: str) -> str:
         # 没说去哪儿配。换掉。
         raise RuntimeError(_NO_BLOB_TOKEN) from exc
     except BlobError as exc:
+        if _is_private_store_error(exc):
+            # 私有 store 读是要鉴权的，而阿里云只会匿名访问。降级成 private
+            # 看似能传上去，但 create_voice 之后必然回源失败，报成
+            # InputDownloadFailed，看着像上游坏了。所以这里说清楚而不是绕过去。
+            raise RuntimeError(_PRIVATE_STORE) from exc
         raise RuntimeError(f"上传到 Vercel Blob 失败：{exc}") from exc
     if not result.url:
         raise RuntimeError("Vercel Blob 上传成功，但没有返回可下载的 url。")

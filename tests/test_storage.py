@@ -169,6 +169,65 @@ class TestPutBlob:
         assert "No token found" not in str(excinfo.value)
         assert "Connect to Project" in str(excinfo.value)
 
+    def test_private_store_is_explained_with_the_actual_fix(self, monkeypatch):
+        # A private store rejects public puts. Its URLs need auth on every
+        # read, and DashScope reads anonymously, so there is no code-side way
+        # around it -- the store has to be recreated as Public.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        module = self._fake_sdk(monkeypatch, {})
+
+        async def private_store(self, path, body, **kwargs):
+            raise module.BlobError(
+                "Cannot use public access on a private store. "
+                "The store is configured with private access."
+            )
+
+        module.AsyncBlobClient.put = private_store
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run(storage.put(b"x", ".wav"))
+        message = str(excinfo.value)
+        assert "Cannot use public access" not in message
+        assert "--access public" in message
+        assert "Connect to Project" in message
+        # It must say the store cannot be reconfigured, or the reader will go
+        # hunting for an access toggle that does not exist.
+        assert "改不了" in message
+
+    def test_unrelated_blob_errors_are_not_reported_as_config_problems(
+        self, monkeypatch
+    ):
+        # Only the private-store text is special-cased; everything else must
+        # still surface the upstream detail.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        module = self._fake_sdk(monkeypatch, {})
+
+        async def suspended(self, path, body, **kwargs):
+            raise module.BlobError("store suspended")
+
+        module.AsyncBlobClient.put = suspended
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run(storage.put(b"x", ".wav"))
+        assert "store suspended" in str(excinfo.value)
+        assert "--access public" not in str(excinfo.value)
+
+    def test_never_downgrades_to_private_access(self, monkeypatch):
+        # Retrying with access="private" would upload fine and then fail later
+        # as an opaque InputDownloadFailed from DashScope, which reads like an
+        # upstream outage. Failing loudly at upload is the better trade.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        recorder = {}
+        self._fake_sdk(monkeypatch, recorder)
+
+        run(storage.put(b"x", ".wav"))
+
+        assert recorder["kwargs"]["access"] == "public"
+        assert "private" not in recorder["kwargs"].values()
+
     def test_missing_token_is_caught_before_any_request(self, monkeypatch):
         # The real SDK, so this also pins that credentials resolve offline.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
