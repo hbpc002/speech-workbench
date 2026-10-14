@@ -125,7 +125,7 @@ function renameVoice(voiceId) {
   if (next === null) return;
   setVoiceMeta(voiceId, { alias: next }).then(() => {
     log('voice-status', `已把 ${voiceId} 命名为「${next.trim() || voiceId}」`, 'system');
-    refreshVoices();
+    refreshVoices({ force: true });
   });
 }
 
@@ -135,7 +135,7 @@ function editTags(voiceId) {
   if (next === null) return;
   setVoiceMeta(voiceId, { tags: next.split(/[、,，]/).map((t) => t.trim()).filter(Boolean) }).then(() => {
     log('voice-status', `已更新 ${voiceId} 的标签`, 'system');
-    refreshVoices();
+    refreshVoices({ force: true });
   });
 }
 
@@ -342,18 +342,30 @@ function matchesFilter(entry) {
   return tagsFor(entry.voice_id || entry.voiceId || String(entry)).includes(filterTag);
 }
 
-async function refreshVoices() {
+async function refreshVoices({ force = false } = {}) {
   const container = el('voice-list');
   const select = el('voice-play-select');
   try {
-    const { voices } = await api('/api/voices');
-    const list = Array.isArray(voices) ? voices : [];
+    // `force` is what the 刷新列表 button sends: it bypasses the server's
+    // success and failure caches so the button cannot answer from a stale list
+    // or from a recorded timeout.
+    const response = await api(`/api/voices${force ? '?refresh=true' : ''}`);
+    const list = Array.isArray(response.voices) ? response.voices : [];
     const previous = select.value;
     container.innerHTML = '';
     select.innerHTML = '';
     voiceModels = new Map();
 
     renderTagFilter();
+
+    // A stale list is shown on purpose -- it still lets the operator see and
+    // delete what they cloned -- but it must not look current.
+    const staleBanner = el('voice-stale');
+    staleBanner.hidden = !response.stale;
+    if (response.stale) {
+      staleBanner.textContent = `显示的是上一次成功获取的列表，可能不是最新的。${response.warning || ''}`;
+      log('voice-status', '音色列表是上一次的缓存，点「刷新列表」重试。', 'error');
+    }
 
     if (!list.length) {
       container.innerHTML = '<p class="muted">还没有复刻过音色。</p>';
@@ -969,7 +981,7 @@ export function init() {
   el('voice-record').addEventListener('click', toggleRecording);
   el('voice-clone').addEventListener('click', clone);
   el('voice-download').addEventListener('click', downloadClip);
-  el('voice-refresh').addEventListener('click', refreshVoices);
+  el('voice-refresh').addEventListener('click', () => refreshVoices({ force: true }));
   el('voice-clear').addEventListener('click', clearAll);
   el('voice-stop').addEventListener('click', () => previewPlayer && previewPlayer.clear());
 

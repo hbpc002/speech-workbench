@@ -26,9 +26,26 @@ PREFIX_PATTERN = re.compile(r"^[a-z0-9]{1,9}$")
 
 # The SDK's own connect timeout is 300 s, which is also Vercel's per-function
 # limit: one unreachable upstream turns into a 504 for the whole invocation.
-LIST_TIMEOUT_SECONDS = 20.0
-LIST_CACHE_SECONDS = 60.0
+# Both are env-configurable because the right value depends on where the
+# function runs: a Vercel function in Tokyo reaching DashScope in Beijing is a
+# different latency budget than a laptop on the same continent.
+LIST_TIMEOUT_SECONDS = config._env_float("LIST_TIMEOUT_SECONDS", default=20.0)
+LIST_CACHE_SECONDS = config._env_float("LIST_CACHE_SECONDS", default=60.0)
+
+# How long a failed attempt is remembered. Without this every page load pays the
+# full timeout again: nothing is cached on failure, so a slow upstream turns
+# every reload into another 20 s wait. This is the difference between one slow
+# page load and a tab that appears permanently stuck.
+LIST_FAIL_RETRY_SECONDS = 15.0
+
 _LIST_CACHE: dict[str, tuple[float, dict]] = {}
+_LIST_FAILURES: dict[str, float] = {}
+
+_LIST_TIMEOUT_HINT = (
+    "查询音色列表超时：DashScope 没有在 {seconds:.0f}s 内返回。"
+    "如果之前成功列过，这里会先显示上一次的列表；"
+    "稍等片刻点「刷新列表」重试，或调大 LIST_TIMEOUT_SECONDS。"
+)
 
 
 def _service() -> VoiceEnrollmentService:
@@ -37,32 +54,70 @@ def _service() -> VoiceEnrollmentService:
     return VoiceEnrollmentService()
 
 
+def _stale_or_fail(cache_key: str) -> dict:
+    """Serve the last good list, or give up.
+
+    A stale list is far more useful than a hard 504: the operator can still see
+    what they cloned, and can still delete something they are done with -- which
+    matters because that is the one action with an upstream quota attached.
+
+    With nothing cached there is nothing safe to return. An empty list would be
+    a lie ("you have no voices") and the operator could recreate one by accident.
+    """
+    stale = _LIST_CACHE.get(cache_key)
+    if stale:
+        return {
+            **stale[1],
+            "stale": True,
+            "warning": _LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS),
+        }
+    raise HTTPException(
+        status_code=504,
+        detail=_LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS),
+    )
+
+
 @router.get("")
-def list_voices(prefix: str = "") -> dict:
+def list_voices(prefix: str = "", refresh: bool = False) -> dict:
     """List enrolled voices, optionally narrowed to one prefix.
 
     Cached briefly: this runs on every page load, and each miss is an outbound
     call to DashScope. On a platform where that call can hang (Vercel observed
     a 300 s connect timeout), an uncached endpoint burns the whole function
     budget on every reload.
+
+    Failures are cached too. A successful list is worth keeping; so is the
+    knowledge that the last attempt just timed out, because re-paying the full
+    timeout on every reload is what makes this feel broken rather than slow.
+
+    `refresh=true` bypasses both caches: it is what the 刷新列表 button sends,
+    and a refresh button that cannot refresh is its own bug.
     """
-    service = _service()
     cache_key = prefix or ""
     cached = _LIST_CACHE.get(cache_key)
-    if cached and time.monotonic() - cached[0] < LIST_CACHE_SECONDS:
+    if not refresh and cached and time.monotonic() - cached[0] < LIST_CACHE_SECONDS:
         return cached[1]
 
+    failed_at = _LIST_FAILURES.get(cache_key)
+    if not refresh and failed_at is not None and time.monotonic() - failed_at < LIST_FAIL_RETRY_SECONDS:
+        # Serve whatever we have rather than hanging again straight away.
+        return _stale_or_fail(cache_key)
+
+    service = _service()
+    started = time.monotonic()
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         voices = pool.submit(
             service.list_voices, page_index=0, page_size=50, **({"prefix": prefix} if prefix else {})
         ).result(timeout=LIST_TIMEOUT_SECONDS)
     except FuturesTimeout:
-        raise HTTPException(
-            status_code=504,
-            detail=f"查询音色列表超时（{LIST_TIMEOUT_SECONDS}s），上游可能不可达",
-        ) from None
+        elapsed = time.monotonic() - started
+        _LIST_FAILURES[cache_key] = time.monotonic()
+        print(f"[voices] list_voices timed out after {elapsed:.1f}s (limit {LIST_TIMEOUT_SECONDS:.0f}s)")
+        # Never serve an empty list as if it were the truth.
+        return _stale_or_fail(cache_key)
     except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
+        _LIST_FAILURES[cache_key] = time.monotonic()
         raise HTTPException(
             status_code=502, detail=f"查询音色列表失败: {redact.log_only('voices', exc)}"
         ) from exc
@@ -71,6 +126,7 @@ def list_voices(prefix: str = "") -> dict:
         # worker and reintroduce the timeout we just enforced.
         pool.shutdown(wait=False, cancel_futures=True)
 
+    _LIST_FAILURES.pop(cache_key, None)
     payload = {
         "voices": [_describe(entry) for entry in voices],
         "request_id": service.get_last_request_id(),
