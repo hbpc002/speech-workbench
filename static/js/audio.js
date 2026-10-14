@@ -219,6 +219,15 @@ export class VoiceClipRecorder {
     return this.collectedSamples >= this.targetSamples;
   }
 
+  /**
+   * The raw captured PCM, so callers can inspect or trim it before it is
+   * wrapped in a WAV header. Copying is not necessary: `collected` is reset by
+   * start() and this array is never mutated afterwards.
+   */
+  samples() {
+    return concatInt16(this.collected);
+  }
+
   async stop() {
     if (this.levelTimer) clearInterval(this.levelTimer);
     if (this.node) {
@@ -439,23 +448,88 @@ export function saveBlob(blob, filename) {
 }
 
 /**
- * IndexedDB store for generated audio.
+ * Decodes any audio file the browser understands and renders it as 16 kHz mono
+ * PCM, which is what DashScope's enrollment endpoint wants.
+ *
+ * Two reasons this exists rather than posting the file as-is:
+ *   - the old code hardcoded a `.wav` filename on whatever the user picked, so
+ *     an mp3 was presented as a wav and the server's format check was a fiction
+ *   - stereo or 48 kHz sources are not what the endpoint documents, and
+ *     resampling here means the quality check sees the same samples the server
+ *     will get, not the ones the browser happened to decode
+ *
+ * OfflineAudioContext does the resampling, so there is no hand-rolled filter to
+ * get wrong.
+ */
+export async function decodeToPcm16k(blob) {
+  const source = await blob.arrayBuffer();
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  let decoded;
+  try {
+    decoded = await context.decodeAudioData(source);
+  } finally {
+    await context.close();
+  }
+
+  const sourceSampleRate = decoded.sampleRate;
+  const sourceChannels = decoded.numberOfChannels;
+  const needsResample = sourceSampleRate !== INPUT_SAMPLE_RATE || sourceChannels !== 1;
+
+  let rendered = decoded;
+  if (needsResample) {
+    const frames = Math.max(1, Math.ceil((decoded.duration * INPUT_SAMPLE_RATE)));
+    const offline = new OfflineAudioContext(1, frames, INPUT_SAMPLE_RATE);
+    const sourceNode = offline.createBufferSource();
+    sourceNode.buffer = decoded;
+    sourceNode.connect(offline.destination);
+    sourceNode.start();
+    rendered = await offline.startRendering();
+  }
+
+  return {
+    samples: floatToInt16(rendered.getChannelData(0)),
+    seconds: rendered.duration,
+    sourceSampleRate,
+    sourceChannels,
+    wasResampled: needsResample,
+  };
+}
+
+/** Float samples in -1..1 to Int16, which is what every other helper here uses. */
+export function floatToInt16(source) {
+  const out = new Int16Array(source.length);
+  for (let i = 0; i < source.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, source[i]));
+    out[i] = Math.round(clamped * 32767);
+  }
+  return out;
+}
+
+/**
+ * IndexedDB stores for generated audio.
  *
  * localStorage is not an option: a single ~1 s sentence is ~45 KB of PCM, so a
  * handful of segments would blow the 5 MB string quota.
  *
  * Each generated run is one record holding its own sentence list, so history
  * survives a refresh and nothing is ever overwritten in place.
+ *
+ * One module owns the database. Two openers disagreeing about the version
+ * number is the classic way to end up with a store that exists in one tab and
+ * not the next, so the store list lives here rather than at the call sites.
  */
 const DB_NAME = 'speech-workbench';
-const STORE = 'tts-records';
+const DB_VERSION = 2;
+const STORES = ['tts-records', 'voice-previews', 'voice-clones'];
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE)) {
-        request.result.createObjectStore(STORE, { keyPath: 'id' });
+      for (const name of STORES) {
+        if (!request.result.objectStoreNames.contains(name)) {
+          request.result.createObjectStore(name, { keyPath: 'id' });
+        }
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -463,36 +537,50 @@ function openDb() {
   });
 }
 
-function tx(mode, run) {
+function tx(storeName, mode, run) {
   return openDb().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE, mode);
-        const request = run(transaction.objectStore(STORE));
+        const transaction = db.transaction(storeName, mode);
+        const request = run(transaction.objectStore(storeName));
         transaction.oncomplete = () => resolve(request && request.result);
         transaction.onerror = () => reject(transaction.error);
       })
   );
 }
 
-export function saveTtsRecord(record) {
+/**
+ * Records are read newest-first. `sortKey` lets the clone log order by
+ * attempt time while the preview history orders by playback.
+ */
+function newestFirst(rows, sortKey = 'createdAt') {
+  return (rows || []).sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0));
+}
+
+/** One generic pair per store; the tab code reads better with named exports. */
+const saveIn = (name) => (record) => {
   // Structured clone handles the nested Int16Array, so PCM round-trips intact.
-  return tx('readwrite', (store) => store.put(record));
-}
+  return tx(name, 'readwrite', (store) => store.put(record));
+};
+const loadFrom = (name, sortKey) =>
+  () => tx(name, 'readonly', (store) => store.getAll()).then((rows) => newestFirst(rows, sortKey));
+const removeFrom = (name) => (id) => tx(name, 'readwrite', (store) => store.delete(id));
+const clearStore = (name) => () => tx(name, 'readwrite', (store) => store.clear());
 
-export function loadTtsRecords() {
-  return tx('readonly', (store) => store.getAll()).then((rows) =>
-    (rows || []).sort((a, b) => b.createdAt - a.createdAt)
-  );
-}
+export const saveTtsRecord = saveIn('tts-records');
+export const loadTtsRecords = loadFrom('tts-records');
+export const deleteTtsRecord = removeFrom('tts-records');
+export const clearTtsRecords = clearStore('tts-records');
 
-export function deleteTtsRecord(id) {
-  return tx('readwrite', (store) => store.delete(id));
-}
+export const saveVoicePreview = saveIn('voice-previews');
+export const loadVoicePreviews = loadFrom('voice-previews');
+export const deleteVoicePreview = removeFrom('voice-previews');
+export const clearVoicePreviews = clearStore('voice-previews');
 
-export function clearTtsRecords() {
-  return tx('readwrite', (store) => store.clear());
-}
+export const saveVoiceClone = saveIn('voice-clones');
+export const loadVoiceClones = loadFrom('voice-clones', 'attemptedAt');
+export const deleteVoiceClone = removeFrom('voice-clones');
+export const clearVoiceClones = clearStore('voice-clones');
 
 /** Stable id for one sentence inside one record. */
 export function segmentKey(recordId, index) {

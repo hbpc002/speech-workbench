@@ -20,6 +20,7 @@ import {
   splitSentences,
 } from '/static/js/audio.js';
 import { api, applySocketStatus, el, state } from '/static/js/app.js';
+import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { applyRules, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
 import { VOICEOVER_PROMPT } from '/static/js/voiceover_prompt.js';
@@ -58,18 +59,13 @@ function currentParams() {
   params.seed = resolveSeed(el('tts-seed').value);
 
   const kind = el('tts-instruct-kind').value;
-  if (kind === 'custom') {
-    params.instruction = el('tts-instruct-custom').value.trim();
-  } else if (kind) {
-    const value = el('tts-instruct-value').value;
-    if (value) {
-      if (kind === 'emotion') params.instruction = `你说话的情感是${value}。`;
-      else if (kind === 'scene') params.instruction = `你正在进行${value}，你说话的情感是neutral。`;
-      else if (kind === 'role') params.instruction = `你现在说话的角色是${value}，你说话的情感是neutral。`;
-      else if (kind === 'identity') params.instruction = `你正在以一个${value}的身份说话，你说话的情感是neutral。`;
-      else if (kind === 'dialect') params.instruction = `请用${value}表达。`;
-    }
-  }
+  // Shared with the voice-clone tab so the two cannot drift; see instruct.js.
+  const instruction = buildInstruction(
+    kind,
+    kind === 'custom' ? '' : el('tts-instruct-value').value,
+    el('tts-instruct-custom').value
+  );
+  if (instruction) params.instruction = instruction;
   return params;
 }
 

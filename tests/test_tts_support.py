@@ -7,6 +7,7 @@ anything it does not recognise.
 
 import pytest
 
+from server import config, voices
 from server.tts_support import DEFAULTS, NUMERIC_PARAMS, normalize_params
 
 
@@ -82,3 +83,33 @@ class TestTextOptions:
 def test_every_numeric_param_has_a_default():
     # Guards against adding a NUMERIC_PARAMS entry with no DEFAULTS counterpart.
     assert set(NUMERIC_PARAMS) - {"seed"} <= set(DEFAULTS)
+
+
+class TestClonedVoiceModels:
+    """A cloned voice is bound to the model it was enrolled against.
+
+    The voice-clone preview used to send no params at all, so the server fell
+    back to TTS_MODEL. Anything cloned against a qwen target then hit error 418.
+    These cases pin that every clone target survives the filter.
+    """
+
+    @pytest.mark.parametrize("model", config.VOICE_CLONE_MODELS)
+    def test_clone_target_models_all_reach_the_synthesizer(self, model):
+        assert model in voices.MODELS, f"{model} is not in the catalogue, so it would be dropped"
+        out = normalize_params({"model": model})
+        # The default is omitted rather than echoed, so assert on the model the
+        # synthesizer will actually get, not on key presence.
+        assert out.get("model", config.TTS_MODEL) == model
+
+    def test_a_clone_target_equal_to_the_default_is_omitted_honestly(self):
+        # Same effect, but the payload should not carry a redundant key: the
+        # browser omits it, and the server must agree rather than invent one.
+        default = config.TTS_MODEL
+        if default not in config.VOICE_CLONE_MODELS:
+            pytest.skip("the configured TTS_MODEL is not a clone target")
+        assert "model" not in normalize_params({"model": default})
+
+    def test_a_cloned_voice_id_is_not_mistaken_for_a_model(self):
+        # The tab sends the model, never the voice, in `model`. A voice id here
+        # would be smuggled straight into SpeechSynthesizer kwargs.
+        assert "model" not in normalize_params({"model": "cosyvoice-v3-flash-abc123"})

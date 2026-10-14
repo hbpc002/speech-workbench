@@ -647,6 +647,62 @@ p.hint {
   margin-top: 12px;
 }
 
+/* ---- enrollment clip self-check (tab 4) ------------------------------------ */
+
+.clip-check {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 11px 13px;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.clip-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.clip-check-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* The panel picks up its severity so the advice reads as advice, not chrome. */
+.clip-check.warn { border-color: var(--warn); }
+.clip-check.err { border-color: var(--err); }
+
+.clip-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clip-stat {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.clip-issues {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.clip-issues .sev-error { color: var(--err); }
+.clip-issues .sev-warn { color: var(--warn); }
+
 @media (max-width: 760px) {
   .modal { padding: 16px; }
   .prompt-box { font-size: 12px; }

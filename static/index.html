@@ -250,18 +250,63 @@
         <button class="ghost danger" id="voice-clear">清理全部</button>
       </div>
 
+      <div class="clip-check" id="voice-clip-panel" hidden>
+        <div class="clip-check-head">
+          <h2>样本自检</h2>
+          <label class="inline"><input type="checkbox" id="voice-trim" checked> 自动去除首尾静音</label>
+        </div>
+        <div class="clip-stats" id="voice-clip-stats"></div>
+        <ul class="clip-issues" id="voice-clip-issues"></ul>
+      </div>
+
       <div id="voice-list" class="voice-list"></div>
+
+      <h2 class="list-title">试听 <span class="muted" id="voice-count"></span></h2>
 
       <div class="clone-columns">
         <div class="clone-card">
-          <h2>试听</h2>
-          <select id="voice-play-select"></select>
+          <h2>试听设置</h2>
+          <label>音色 <select id="voice-play-select"></select></label>
           <label class="grow">文本
             <textarea id="voice-play-text" rows="2">这是用复刻音色合成的语音。</textarea>
           </label>
-          <button id="voice-play">朗读</button>
+          <p class="muted" id="voice-model-note"></p>
+        </div>
+
+        <div class="clone-card">
+          <h2>参数</h2>
+          <label class="slider">语速 <output id="voice-rate-out">1.00</output>
+            <input type="range" id="voice-rate" min="0.5" max="2" step="0.05" value="1">
+          </label>
+          <label class="slider">音调 <output id="voice-pitch-out">1.00</output>
+            <input type="range" id="voice-pitch" min="0.5" max="2" step="0.05" value="1">
+          </label>
+          <label class="slider">音量 <output id="voice-volume-out">50</output>
+            <input type="range" id="voice-volume" min="0" max="100" step="1" value="50">
+          </label>
+          <label>种子 <input type="number" id="voice-seed" min="0" max="65535" placeholder="随机" style="width:90px"></label>
         </div>
       </div>
+
+      <div class="controls">
+        <label>指令 <select id="voice-instruct-kind"></select></label>
+        <label class="grow" id="voice-instruct-value-wrap">取值 <select id="voice-instruct-value"></select></label>
+        <label class="grow" id="voice-instruct-custom-wrap" hidden>自定义指令
+          <input type="text" id="voice-instruct-custom" placeholder="须以句号结尾">
+        </label>
+      </div>
+      <p class="muted hint" id="voice-instruct-note" hidden></p>
+
+      <div class="controls btn-row">
+        <button id="voice-play">朗读</button>
+        <button class="ghost" id="voice-stop">停止</button>
+        <button class="ghost" id="voice-clear-history">清空试听记录</button>
+      </div>
+
+      <div id="voice-history" class="history"></div>
+
+      <h2 class="list-title">复刻记录 <span class="muted" id="voice-clone-count"></span></h2>
+      <div id="voice-clone-log" class="history"></div>
     </section>
   </main>
 </div>
