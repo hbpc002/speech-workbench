@@ -65,6 +65,8 @@ _NO_BLOB_TOKEN = (
     "选择了 blob 存储但没有 BLOB_READ_WRITE_TOKEN。请到 Vercel 项目的 "
     "Storage → Blob store → Projects → Connect to Project，勾选 Production 和 "
     "Preview 把 store 连到项目，Vercel 会自动注入该变量。"
+    "注意环境变量是在部署时注入的：刚加的变量必须重新部署才会生效，"
+    "Vercel 控制台改完不 redeploy 等于没改。"
 )
 _NO_VERCEL_SDK = (
     "选择了 blob 存储但没装 vercel 依赖，请执行 `pip install vercel`；"

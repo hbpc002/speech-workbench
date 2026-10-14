@@ -228,7 +228,7 @@ class TestPutBlob:
         assert recorder["kwargs"]["access"] == "public"
         assert "private" not in recorder["kwargs"].values()
 
-    def test_missing_token_is_caught_before_any_request(self, monkeypatch):
+    def test_missing_token_names_the_var_and_the_fix(self, monkeypatch):
         # The real SDK, so this also pins that credentials resolve offline.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
         monkeypatch.setattr(config, "BLOB_TOKEN", None)
@@ -245,6 +245,10 @@ class TestPutBlob:
         # says where; a Blob store exists but is not connected to the project
         # is by far the most common cause.
         assert "Connect to Project" in message
+        # And it never says the variable must be deployed. Adding one in the
+        # dashboard without redeploying is the single most common way to still
+        # land here, so it has to be in the message.
+        assert "重新部署" in message
 
     def test_upload_error_message_matches_the_startup_check(self, monkeypatch):
         # Same problem, so same words — the boot log and the UI must not
