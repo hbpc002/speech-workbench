@@ -32,6 +32,7 @@ import {
   saveVoiceClone,
   saveVoicePreview,
 } from '/static/js/audio.js';
+import { actionButton } from '/static/js/actions.js';
 import { api, applySocketStatus, el, log, state } from '/static/js/app.js';
 import { buildInstruction, instructionValues, isVoiceDependent } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
@@ -576,16 +577,6 @@ function previewStatus(record) {
   return { cls: 'ok', label: '完成' };
 }
 
-function button(label, cls, handler, disabled, title) {
-  const node = document.createElement('button');
-  node.className = cls || 'ghost';
-  node.textContent = label;
-  node.disabled = Boolean(disabled);
-  if (title) node.title = title;
-  node.addEventListener('click', handler);
-  return node;
-}
-
 function renderHistory() {
   const box = el('voice-history');
   box.innerHTML = '';
@@ -640,10 +631,10 @@ function renderHistory() {
     actions.className = 'hactions';
     const busy = Boolean(busyPreview && busyPreview.id === record.id);
     actions.append(
-      button('播放', 'ghost', () => playRecord(record), !record.chunks.length || busy),
-      button('下载', '', () => downloadRecord(record), !record.chunks.length || busy),
-      button('重新生成', 'ghost', () => regenerate(record), busy),
-      button('删除', 'ghost danger', () => removePreview(record), false)
+      actionButton('播放', { onClick: () => playRecord(record), disabled: !record.chunks.length || busy }),
+      actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: !record.chunks.length || busy }),
+      actionButton('重新生成', { onClick: () => regenerate(record), disabled: busy }),
+      actionButton('删除', { className: 'ghost danger', onClick: () => removePreview(record) })
     );
 
     head.append(meta, tags, actions);
@@ -730,11 +721,14 @@ function renderCloneLog() {
 
     const actions = document.createElement('div');
     actions.className = 'hactions';
-    actions.appendChild(button('删除', 'ghost danger', async () => {
-      cloneLogs = cloneLogs.filter((item) => item.id !== record.id);
-      renderCloneLog();
-      await deleteVoiceClone(record.id).catch(() => {});
-    }, false));
+    actions.appendChild(actionButton('删除', {
+      className: 'ghost danger',
+      async onClick() {
+        cloneLogs = cloneLogs.filter((item) => item.id !== record.id);
+        renderCloneLog();
+        await deleteVoiceClone(record.id).catch(() => {});
+      },
+    }));
 
     head.append(meta, tags, actions);
     card.appendChild(head);

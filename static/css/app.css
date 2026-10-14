@@ -404,8 +404,11 @@ p.hint {
 
   .seg-list, .history { gap: 8px; }
 
-  /* One record becomes a vertical stack. The five actions stay on a single
-     row by swapping to short labels, which is what actually saves the space. */
+  /* One record becomes a vertical stack. The actions stay on a single
+     row by swapping to short labels, which is what actually saves the space.
+     Flex rather than a fixed column count: the synthesis records have five
+     actions, a voice-clone preview has four, and a clone-log entry has only a
+     delete. Fixed columns would leave a dead gap or squeeze a lone button. */
   .hhead {
     flex-wrap: wrap;
     align-items: flex-start;
@@ -427,17 +430,18 @@ p.hint {
 
   .hactions {
     flex: 1 1 100%;
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    display: flex;
     gap: 5px;
   }
 
-  /* Long labels would wrap inside a 70px cell; show the short form instead. */
+  /* Long labels would wrap inside a narrow cell; show the short form instead. */
   .hactions button,
   .seg-actions button {
     font-size: 0;
     padding: 7px 2px;
     white-space: nowrap;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .hactions button::after,

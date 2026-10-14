@@ -19,6 +19,7 @@ import {
   segmentKey,
   splitSentences,
 } from '/static/js/audio.js';
+import { actionButton } from '/static/js/actions.js';
 import { api, applySocketStatus, el, state } from '/static/js/app.js';
 import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
@@ -571,17 +572,6 @@ function renderHistory() {
   }
 }
 
-function button(label, short, cls, handler, disabled, title) {
-  const node = document.createElement('button');
-  node.className = cls || 'ghost';
-  node.textContent = label;
-  node.dataset.short = short || label;
-  node.disabled = Boolean(disabled);
-  if (title) node.title = title;
-  node.addEventListener('click', handler);
-  return node;
-}
-
 function renderCard(record) {
   const card = document.createElement('div');
   card.className = 'hcard';
@@ -631,15 +621,17 @@ function renderCard(record) {
   const expandLabel = openIds.has(record.id) ? '收起分段' : '分段';
 
   actions.append(
-    button('播放', '播放', 'ghost', () => playRecord(record), done === 0 || isBusy),
-    button('下载', '下载', '', () => downloadRecord(record), done === 0 || isBusy),
-    button('重新生成', '重生', 'ghost', () => generateRecord(record, true), isBusy),
-    button(expandLabel, openIds.has(record.id) ? '收起' : '分段', 'ghost', () => {
-      if (openIds.has(record.id)) openIds.delete(record.id);
-      else openIds.add(record.id);
-      renderHistory();
-    }, false),
-    button('删除', '删除', 'ghost danger', () => removeRecord(record), false)
+    actionButton('播放', { onClick: () => playRecord(record), disabled: done === 0 || isBusy }),
+    actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: done === 0 || isBusy }),
+    actionButton('重新生成', { onClick: () => generateRecord(record, true), disabled: isBusy }),
+    actionButton(expandLabel, {
+      onClick() {
+        if (openIds.has(record.id)) openIds.delete(record.id);
+        else openIds.add(record.id);
+        renderHistory();
+      },
+    }),
+    actionButton('删除', { className: 'ghost danger', onClick: () => removeRecord(record) })
   );
 
   head.append(meta, tags, actions);
@@ -682,15 +674,31 @@ function renderSentence(record, sentence, index) {
   const isBusy = busyRecord && busyRecord.id === record.id;
 
   actions.append(
-    button('重新生成', '重生', '', () => generateSentence(record, index), isBusy, false,
-      sentence.seed == null
+    actionButton('重新生成', {
+      className: '',
+      disabled: isBusy,
+      // Was previously passed as a 7th argument the old helper never read, so
+      // the tooltip never appeared.
+      title: sentence.seed == null
         ? '换一个种子重新生成这一句'
-        : `本句种子 ${sentence.seed}，点击会换一个`),
-    button('播放', '播放', 'ghost', () => playSentence(sentence), !sentence.pcm),
-    button('下载', '下载', 'ghost', () => {
-      saveBlobOne(pcmToWavBlob([sentence.pcm], SAMPLE_RATE), `语音-${index + 1}.wav`);
-    }, !sentence.pcm),
-    button('删除', '删除', 'ghost danger', () => removeSentence(record, index), isBusy)
+        : `本句种子 ${sentence.seed}，点击会换一个`,
+      onClick: () => generateSentence(record, index),
+    }),
+    actionButton('播放', {
+      disabled: !sentence.pcm,
+      onClick: () => playSentence(sentence),
+    }),
+    actionButton('下载', {
+      disabled: !sentence.pcm,
+      onClick: () => {
+        saveBlobOne(pcmToWavBlob([sentence.pcm], SAMPLE_RATE), `语音-${index + 1}.wav`);
+      },
+    }),
+    actionButton('删除', {
+      className: 'ghost danger',
+      disabled: isBusy,
+      onClick: () => removeSentence(record, index),
+    })
   );
 
   row.append(badge, text, duration, actions);
