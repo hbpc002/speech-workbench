@@ -16,6 +16,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from . import config, redact, storage
+from .voices import parse_clone_model, parse_clone_prefix, voice_status_label
 
 router = APIRouter(prefix="/api/voices", tags=["voices"])
 
@@ -70,9 +71,40 @@ def list_voices(prefix: str = "") -> dict:
         # worker and reintroduce the timeout we just enforced.
         pool.shutdown(wait=False, cancel_futures=True)
 
-    payload = {"voices": voices, "request_id": service.get_last_request_id()}
+    payload = {
+        "voices": [_describe(entry) for entry in voices],
+        "request_id": service.get_last_request_id(),
+    }
     _LIST_CACHE[cache_key] = (time.monotonic(), payload)
     return payload
+
+
+def _describe(entry: dict) -> dict:
+    """Add what `list_voice` omits but the UI needs.
+
+    The upstream list carries only voice_id / gmt_create / gmt_modified /
+    status. The target model is not among them -- only `query_voice` returns
+    it, one round trip per voice -- but it is recoverable from the id, and the
+    preview has to send the right one or the synthesis fails with 418.
+
+    `status` is surfaced because a voice still under review, or one that failed
+    review, is listed identically to a working one otherwise, and the only
+    symptom is that the preview sounds wrong.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    voice_id = entry.get("voice_id") or entry.get("voiceId") or ""
+    model = entry.get("target_model") or parse_clone_model(voice_id)
+    status_label, status_cls = voice_status_label(entry.get("status") or "")
+    out = dict(entry)
+    if model:
+        out["target_model"] = model
+    if voice_id:
+        out["voice_id"] = voice_id
+        out["prefix"] = parse_clone_prefix(voice_id)
+    out["status_label"] = status_label
+    out["status_class"] = status_cls
+    return out
 
 
 ENROLL_ATTEMPTS = 3

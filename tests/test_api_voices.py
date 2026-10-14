@@ -120,6 +120,71 @@ class TestErrorScrubbing:
         assert "***" in response.json()["detail"]
 
 
+class TestDescribe:
+    """`_describe` fills in what `list_voice` leaves out.
+
+    The regression: the preview needs the voice's target model, `list_voice`
+    does not return it, and the tab was reading a field that never existed --
+    so it always fell back to the default model and every qwen-cloned voice
+    failed with 418.
+    """
+
+    def test_recovers_the_target_model_from_the_id(self):
+        out = api_voices._describe({"voice_id": "qwen-audio-3.0-tts-flash-me-abc123"})
+        assert out["target_model"] == "qwen-audio-3.0-tts-flash"
+
+    def test_recovers_the_prefix(self):
+        out = api_voices._describe({"voice_id": "cosyvoice-v3-flash-zhang-abc123"})
+        assert out["prefix"] == "zhang"
+
+    def test_prefers_an_explicit_target_model(self):
+        out = api_voices._describe(
+            {"voice_id": "whatever-x-y", "target_model": "qwen-audio-3.0-tts-plus"}
+        )
+        assert out["target_model"] == "qwen-audio-3.0-tts-plus"
+
+    def test_does_not_invent_a_model_for_an_unrecognised_id(self):
+        # A wrong model is worse than none: it synthesises with a voice that
+        # does not exist for it, or fails 418 looking like a broken voice.
+        out = api_voices._describe({"voice_id": "legacy-format-xyz"})
+        assert "target_model" not in out
+
+    def test_labels_a_reviewing_voice(self):
+        # A voice still under review is listed identically to a working one
+        # otherwise, and the only symptom is a preview that sounds wrong.
+        out = api_voices._describe({"voice_id": "cosyvoice-v3-flash-a-b", "status": "DEPLOYING"})
+        assert out["status_label"] == "审核中"
+        assert out["status_class"] == "warn"
+
+    def test_labels_a_rejected_voice(self):
+        out = api_voices._describe({"voice_id": "cosyvoice-v3-flash-a-b", "status": "UNDEPLOYED"})
+        assert out["status_class"] == "err"
+
+    def test_missing_status_is_not_reported_as_usable(self):
+        out = api_voices._describe({"voice_id": "cosyvoice-v3-flash-a-b"})
+        assert out["status_class"] != "ok"
+
+    def test_preserves_the_upstream_fields(self):
+        entry = {
+            "voice_id": "cosyvoice-v3-flash-a-b",
+            "gmt_create": "2026-10-14 13:38:02",
+            "gmt_modified": "2026-10-14 13:38:02",
+            "status": "OK",
+        }
+        out = api_voices._describe(entry)
+        for key, value in entry.items():
+            assert out[key] == value
+
+    def test_does_not_mutate_the_input(self):
+        entry = {"voice_id": "cosyvoice-v3-flash-a-b"}
+        api_voices._describe(entry)
+        assert entry == {"voice_id": "cosyvoice-v3-flash-a-b"}
+
+    def test_survives_a_non_dict_entry(self):
+        # Defensive: the cache holds whatever list_voices returned.
+        assert api_voices._describe("unexpected") == "unexpected"
+
+
 class TestStorageMisconfiguration:
     def test_storage_error_reaches_the_browser_in_chinese(self, client, no_auth, wav_upload, monkeypatch):
         monkeypatch.setattr(config, "STORAGE_BACKEND", "local")

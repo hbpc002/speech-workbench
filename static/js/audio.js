@@ -519,8 +519,8 @@ export function floatToInt16(source) {
  * not the next, so the store list lives here rather than at the call sites.
  */
 const DB_NAME = 'speech-workbench';
-const DB_VERSION = 2;
-const STORES = ['tts-records', 'voice-previews', 'voice-clones'];
+const DB_VERSION = 3;
+const STORES = ['tts-records', 'voice-previews', 'voice-clones', 'voice-meta'];
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -581,6 +581,19 @@ export const saveVoiceClone = saveIn('voice-clones');
 export const loadVoiceClones = loadFrom('voice-clones', 'attemptedAt');
 export const deleteVoiceClone = removeFrom('voice-clones');
 export const clearVoiceClones = clearStore('voice-clones');
+
+/**
+ * Operator-assigned name and tags for a cloned voice, keyed by voice_id.
+ *
+ * Local only, and unavoidably so: the upstream API has no name and no tag
+ * field. `update_voice` exists but replaces the sample audio, it does not
+ * rename. Storing it here is the only way to make a list of ids like
+ * `qwen-audio-3.0-tts-flash-myvoice-8f3a2b1c` navigable.
+ */
+export const saveVoiceMeta = saveIn('voice-meta');
+export const loadVoiceMeta = loadFrom('voice-meta');
+export const deleteVoiceMeta = removeFrom('voice-meta');
+export const clearVoiceMeta = clearStore('voice-meta');
 
 /** Stable id for one sentence inside one record. */
 export function segmentKey(recordId, index) {

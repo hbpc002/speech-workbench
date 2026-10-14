@@ -259,6 +259,13 @@
         <ul class="clip-issues" id="voice-clip-issues"></ul>
       </div>
 
+      <div class="controls">
+        <label class="grow">筛选
+          <select id="voice-filter-tag"></select>
+        </label>
+        <span class="status" id="voice-list-count"></span>
+      </div>
+
       <div id="voice-list" class="voice-list"></div>
 
       <h2 class="list-title">试听 <span class="muted" id="voice-count"></span></h2>
@@ -296,6 +303,21 @@
         </label>
       </div>
       <p class="muted hint" id="voice-instruct-note" hidden></p>
+
+      <div class="tag-panel" id="voice-tags" hidden>
+        <div class="tag-row">
+          <span class="tag-label">情感</span>
+          <div class="tag-chips" id="voice-control-tags"></div>
+        </div>
+        <div class="tag-row">
+          <span class="tag-label">拟声</span>
+          <div class="tag-chips" id="voice-rich-tags"></div>
+        </div>
+        <div class="tag-row tag-actions">
+          <button type="button" class="ghost" id="voice-tag-strip" disabled>去标签</button>
+        </div>
+        <p class="muted tag-hint">点击插入到光标处。情感标签对其后所有文本生效，直到遇到下一个情感标签。</p>
+      </div>
 
       <div class="controls btn-row">
         <button id="voice-play">生成</button>

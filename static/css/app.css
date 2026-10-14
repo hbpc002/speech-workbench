@@ -707,6 +707,32 @@ p.hint {
 .clip-issues .sev-error { color: var(--err); }
 .clip-issues .sev-warn { color: var(--warn); }
 
+/* ---- voice management (tab 4) -------------------------------------------- */
+
+/* Shown next to an alias, so the real id is always recoverable. */
+.voice-real-id {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.voice-meta-tag {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.voice-created {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 760px) {
   .modal { padding: 16px; }
   .prompt-box { font-size: 12px; }

@@ -24,12 +24,15 @@ import {
   clearVoicePreviews,
   decodeToPcm16k,
   deleteVoiceClone,
+  deleteVoiceMeta,
   deleteVoicePreview,
   loadVoiceClones,
+  loadVoiceMeta,
   loadVoicePreviews,
   pcmToWavBlob,
   saveBlob,
   saveVoiceClone,
+  saveVoiceMeta,
   saveVoicePreview,
 } from '/static/js/audio.js';
 import { actionButton } from '/static/js/actions.js';
@@ -37,6 +40,7 @@ import { api, applySocketStatus, el, log, state } from '/static/js/app.js';
 import { buildInstruction, instructionValues, isVoiceDependent } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { MAX_SECONDS, SAMPLE_RATE, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
+import { allKnownTags, hasTags, insertAtCaret, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 
 const MAX_PREVIEWS = 30;
 const MAX_CLONE_LOGS = 50;
@@ -68,8 +72,72 @@ let previews = [];        // newest first
 let cloneLogs = [];       // newest first
 let busyPreview = null;
 let pendingResolve = null;
-/** voice_id -> target_model, from the list endpoint. */
+/** voice_id -> target_model, derived from the id because list_voice omits it. */
 let voiceModels = new Map();
+/** voice_id -> { alias, tags } from IndexedDB. Local only; upstream has neither. */
+let voiceMeta = new Map();
+/** The tag currently filtering the list, or '' for all. */
+let filterTag = '';
+
+/** Display name: the operator's alias if they set one, else the id. */
+function labelFor(voiceId) {
+  const alias = (voiceMeta.get(voiceId)?.alias || '').trim();
+  return alias || voiceId;
+}
+
+function tagsFor(voiceId) {
+  return voiceMeta.get(voiceId)?.tags || [];
+}
+
+/** Every tag in use, for the filter dropdown. */
+function allTagsInUse() {
+  const seen = new Set();
+  for (const entry of voiceMeta.values()) {
+    for (const tag of entry.tags || []) {
+      const trimmed = String(tag).trim();
+      if (trimmed) seen.add(trimmed);
+    }
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+}
+
+async function setVoiceMeta(voiceId, patch) {
+  const next = { id: voiceId, ...(voiceMeta.get(voiceId) || {}), ...patch };
+  next.alias = (next.alias || '').trim();
+  next.tags = (next.tags || []).map((t) => String(t).trim()).filter(Boolean);
+  voiceMeta.set(voiceId, next);
+  await saveVoiceMeta(next).catch(() => {});
+  return next;
+}
+
+/**
+ * Upstream has no rename: `update_voice` replaces the sample audio, and the
+ * voice_id is the identity the model is bound to. So this sets a local alias,
+ * and says so, rather than pretending the id changed.
+ */
+function renameVoice(voiceId) {
+  const current = voiceMeta.get(voiceId)?.alias || '';
+  const next = window.prompt(
+    '起个本地别名，方便在列表和试听下拉里认出来。\n' +
+    '不会改上游的音色 ID —— 上游没有改名接口，别名只存在这台设备上。',
+    current
+  );
+  if (next === null) return;
+  setVoiceMeta(voiceId, { alias: next }).then(() => {
+    log('voice-status', `已把 ${voiceId} 命名为「${next.trim() || voiceId}」`, 'system');
+    refreshVoices();
+  });
+}
+
+function editTags(voiceId) {
+  const current = tagsFor(voiceId).join('、');
+  const next = window.prompt('给这个音色打几个标签，用、分隔。用于筛选。', current);
+  if (next === null) return;
+  setVoiceMeta(voiceId, { tags: next.split(/[、,，]/).map((t) => t.trim()).filter(Boolean) }).then(() => {
+    log('voice-status', `已更新 ${voiceId} 的标签`, 'system');
+    refreshVoices();
+  });
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -194,12 +262,83 @@ function noteModelSelection() {
   const note = el('voice-model-note');
   if (!voice) {
     note.textContent = '';
+    renderTagPanel();
     return;
   }
   const known = voiceModels.get(voice);
   note.textContent = known
     ? `该音色复刻自 ${known}，试听会按这个模型合成。`
     : '未查到该音色的复刻模型，将按默认模型合成。';
+  renderTagPanel();
+}
+
+/** Does the selected voice's model understand inline `[tags]`? */
+function tagsSupported() {
+  const voice = el('voice-play-select').value;
+  const model = voiceModels.get(voice);
+  if (!model) return false;
+  return (state.config.tag_models || []).includes(model);
+}
+
+/**
+ * Show or hide the tag panel for the selected voice.
+ *
+ * A tag sent to a model that does not understand it is read out as literal
+ * text, so the panel is hidden rather than the tags being stripped silently:
+ * on cosyvoice the operator is better served by the instruction dropdown.
+ */
+function renderTagPanel() {
+  const panel = el('voice-tags');
+  const textarea = el('voice-play-text');
+  const supported = tagsSupported();
+  panel.hidden = !supported;
+
+  if (!supported) {
+    if (hasTags(textarea.value, state.config)) {
+      textarea.value = stripTags(textarea.value, state.config);
+    }
+    el('voice-tag-strip').disabled = true;
+    return;
+  }
+
+  renderChips(el('voice-control-tags'), tagChips(state.config), {
+    create: (tag) => document.createElement(tag),
+    onPick: (tag) => insertAtCaret(textarea, tag),
+  });
+  renderChips(el('voice-rich-tags'), tagChips(state.config, { rich: true }), {
+    create: (tag) => document.createElement(tag),
+    onPick: (tag) => insertAtCaret(textarea, tag),
+  });
+  syncStripButton();
+}
+
+function syncStripButton() {
+  el('voice-tag-strip').disabled = !hasTags(el('voice-play-text').value, state.config);
+}
+
+function renderTagFilter() {
+  const select = el('voice-filter-tag');
+  const tags = allTagsInUse();
+  const previous = filterTag;
+  select.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = tags.length ? '全部标签' : '全部';
+  select.appendChild(all);
+  for (const tag of tags) {
+    const option = document.createElement('option');
+    option.value = tag;
+    option.textContent = tag;
+    select.appendChild(option);
+  }
+  // A tag can vanish when the last voice carrying it is renamed or deleted.
+  select.value = tags.includes(previous) ? previous : '';
+  filterTag = select.value;
+}
+
+function matchesFilter(entry) {
+  if (!filterTag) return true;
+  return tagsFor(entry.voice_id || entry.voiceId || String(entry)).includes(filterTag);
 }
 
 async function refreshVoices() {
@@ -213,13 +352,25 @@ async function refreshVoices() {
     select.innerHTML = '';
     voiceModels = new Map();
 
+    renderTagFilter();
+
     if (!list.length) {
       container.innerHTML = '<p class="muted">还没有复刻过音色。</p>';
+      el('voice-list-count').textContent = '';
       noteModelSelection();
       return;
     }
 
-    for (const entry of list) {
+    const visible = list.filter(matchesFilter);
+    el('voice-list-count').textContent = visible.length
+      ? `${visible.length} / ${list.length} 个`
+      : '';
+
+    if (!visible.length) {
+      container.innerHTML = `<p class="muted">没有带「${filterTag}」标签的音色。</p>`;
+    }
+
+    for (const entry of visible) {
       const voiceId = entry.voice_id || entry.voiceId || String(entry);
       if (entry.target_model) voiceModels.set(voiceId, entry.target_model);
 
@@ -228,34 +379,74 @@ async function refreshVoices() {
 
       const label = document.createElement('span');
       label.className = 'voice-id';
-      label.textContent = voiceId;
+      const alias = voiceMeta.get(voiceId)?.alias;
+      label.textContent = alias || voiceId;
+      if (alias) {
+        const real = document.createElement('span');
+        real.className = 'voice-real-id';
+        real.textContent = voiceId;
+        label.appendChild(real);
+      }
+      // The server derives these from the id and the upstream status field.
       if (entry.target_model) {
         const tag = document.createElement('span');
         tag.className = 'voice-tag';
         tag.textContent = entry.target_model;
         label.appendChild(tag);
       }
+      if (entry.status_label) {
+        const badge = document.createElement('span');
+        badge.className = `hbadge ${entry.status_class || ''}`;
+        badge.textContent = entry.status_label;
+        badge.title =
+          entry.status === 'DEPLOYING'
+            ? '音色创建后要经过审核，通过后才能合成'
+            : entry.status === 'UNDEPLOYED'
+              ? '审核未通过，这个音色无法用于合成'
+              : '';
+        label.appendChild(badge);
+      }
+      for (const tag of tagsFor(voiceId)) {
+        const chip = document.createElement('span');
+        chip.className = 'voice-meta-tag';
+        chip.textContent = tag;
+        label.appendChild(chip);
+      }
 
-      const preview = document.createElement('button');
-      preview.className = 'ghost';
-      preview.textContent = '试音';
-      preview.addEventListener('click', () => {
-        select.value = voiceId;
-        noteModelSelection();
-        startPreview(voiceId, currentParams());
+      const created = document.createElement('span');
+      created.className = 'voice-created';
+      created.textContent = entry.gmt_create ? entry.gmt_create.slice(0, 10) : '';
+      created.title = entry.gmt_create ? `创建于 ${entry.gmt_create}` : '';
+
+      const preview = actionButton('试音', {
+        onClick: () => {
+          select.value = voiceId;
+          noteModelSelection();
+          startPreview(voiceId, currentParams());
+        },
       });
 
-      const remove = document.createElement('button');
-      remove.className = 'ghost danger';
-      remove.textContent = '删除';
-      remove.addEventListener('click', () => deleteOne(voiceId, remove));
+      const rename = actionButton('改名', {
+        className: 'ghost',
+        onClick: () => renameVoice(voiceId),
+      });
 
-      row.append(label, preview, remove);
+      const tagButton = actionButton('标签', {
+        className: 'ghost',
+        onClick: () => editTags(voiceId),
+      });
+
+      const remove = actionButton('删除', {
+        className: 'ghost danger',
+        onClick: () => deleteOne(voiceId, remove),
+      });
+
+      row.append(label, created, preview, rename, tagButton, remove);
       container.appendChild(row);
 
       const option = document.createElement('option');
       option.value = voiceId;
-      option.textContent = voiceId;
+      option.textContent = alias ? `${alias}（${voiceId}）` : voiceId;
       select.appendChild(option);
     }
 
@@ -269,10 +460,21 @@ async function refreshVoices() {
 }
 
 async function deleteOne(voiceId, button) {
+  const alias = voiceMeta.get(voiceId)?.alias;
+  const confirmed = window.confirm(
+    `删除音色 ${alias ? `「${alias}」` : ''}（${voiceId}）？\n\n` +
+    '删除不可撤销：上游没有改名以外的恢复手段，重新复刻会得到一个新的音色 ID，' +
+    '绑定的模型也可能要重新选。'
+  );
+  if (!confirmed) return;
+
   if (button) button.disabled = true;
   try {
     await api(`/api/voices/${encodeURIComponent(voiceId)}`, { method: 'DELETE' });
-    log('voice-status', `已删除 ${voiceId}`, 'system');
+    log('voice-status', `已删除 ${labelFor(voiceId)}`, 'system');
+    // The alias and tags pointed at an id that no longer exists.
+    voiceMeta.delete(voiceId);
+    await deleteVoiceMeta(voiceId).catch(() => {});
     await recordClone({ voiceId, action: 'delete', ok: true });
     await refreshVoices();
   } catch (error) {
@@ -311,6 +513,14 @@ async function clearAll() {
     failed ? 'error' : 'system'
   );
   if (failed) log('voice-status', '失败的可以单独重试，配额未回收干净', 'error');
+  // Their aliases and tags referenced ids that are gone.
+  for (const entry of list) {
+    const voiceId = entry.voice_id || entry.voiceId || String(entry);
+    if (voiceMeta.has(voiceId)) {
+      voiceMeta.delete(voiceId);
+      deleteVoiceMeta(voiceId).catch(() => {});
+    }
+  }
   await recordClone({ action: 'clearAll', count: list.length - failed, failed, ok: failed === 0 });
   await refreshVoices();
 }
@@ -784,6 +994,17 @@ export function init() {
   el('voice-instruct-kind').addEventListener('change', refreshInstructOptions);
   el('voice-play-select').addEventListener('change', noteModelSelection);
   el('voice-trim').addEventListener('change', reapplyTrim);
+  el('voice-play-text').addEventListener('input', syncStripButton);
+  el('voice-filter-tag').addEventListener('change', (event) => {
+    filterTag = event.target.value;
+    refreshVoices();
+  });
+  el('voice-tag-strip').addEventListener('click', () => {
+    const textarea = el('voice-play-text');
+    if (!hasTags(textarea.value, state.config)) return;
+    textarea.value = stripTags(textarea.value, state.config);
+    syncStripButton();
+  });
 
   const kindSelect = el('voice-instruct-kind');
   for (const kind of CLONE_INSTRUCT_KINDS) {
@@ -809,7 +1030,13 @@ export function init() {
     })
     .catch(() => {});
 
-  refreshVoices();
+  loadVoiceMeta()
+    .then((rows) => {
+      voiceMeta = new Map((rows || []).map((row) => [row.id, row]));
+      return refreshVoices();
+    })
+    .catch(() => refreshVoices());
+
   renderHistory();
   renderCloneLog();
 }

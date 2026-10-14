@@ -9,6 +9,8 @@ rejected by cosyvoice with error 418, and the `_v3` suffix exists precisely to
 distinguish the v3 generation from the v2 one.
 """
 
+from typing import Sequence
+
 # --- cosyvoice-v3-flash (89 voices) --------------------------------------
 
 V3_VOICES: list[dict] = [
@@ -428,6 +430,61 @@ def catalogue() -> list[dict]:
 def voices_for(model: str) -> list[dict]:
     meta = MODELS.get(model)
     return meta["voices"] if meta else []
+
+
+# A cloned voice id is `{target_model}-{prefix}-{unique}` and nothing else. It is
+# the only place the target model appears in `list_voice`, which returns just
+# voice_id / gmt_create / gmt_modified / status -- `query_voice` would return
+# target_model but costs one round trip per voice.
+#
+# Matching is longest-prefix rather than a split on "-", because model ids
+# contain dots and dashes themselves (`qwen-audio-3.0-tts-flash`). Longest-first
+# matters as soon as one model id is a prefix of another: today
+# `qwen-audio-3.0-tts` is not in the list, but adding it would otherwise shadow
+# `qwen-audio-3.0-tts-flash`, since that id does start with `qwen-audio-3.0-tts-`.
+def parse_clone_model(voice_id: str, models: "Sequence[str] | None" = None) -> str | None:
+    """Recover the target model a cloned voice is bound to, from its id.
+
+    Returns None for anything unrecognised rather than guessing: a wrong model
+    here means the preview synthesises with the wrong voice and fails with 418,
+    which reads as a broken voice rather than a parsing mistake.
+    """
+    if models is None:
+        from .config import VOICE_CLONE_MODELS
+
+        models = VOICE_CLONE_MODELS
+    for model in sorted(models, key=len, reverse=True):
+        if voice_id.startswith(f"{model}-"):
+            return model
+    return None
+
+
+# Cloned voices also carry a user-chosen prefix, which is the only human-
+# readable part of the id.
+def parse_clone_prefix(voice_id: str) -> str:
+    model = parse_clone_model(voice_id)
+    if not model:
+        return ""
+    rest = voice_id[len(model) + 1:]
+    # The trailing component is the unique suffix, not part of the prefix.
+    return rest.rsplit("-", 1)[0] if "-" in rest else rest
+
+
+# `list_voice` returns a raw status string. These are the three the API
+# documents; anything else is shown verbatim rather than guessed at.
+VOICE_STATUS_LABELS = {
+    "OK": ("可用", "ok"),
+    "DEPLOYING": ("审核中", "warn"),
+    "UNDEPLOYED": ("审核未通过", "err"),
+}
+
+
+def voice_status_label(status: str) -> tuple[str, str]:
+    """(label, css class) for a voice's enrollment status."""
+    key = (status or "").strip().upper()
+    if not key:
+        return ("未知", "warn")
+    return VOICE_STATUS_LABELS.get(key, (key, "warn"))
 
 
 def default_voice_for(model: str) -> str:
