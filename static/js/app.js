@@ -69,23 +69,9 @@ function showLogin(show, message = '') {
   error.textContent = message;
 }
 
-export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      detail = body.detail || detail;
-    } catch (_) {
-      /* non-JSON error body */
-    }
-    throw new Error(detail);
-  }
-  return response.json();
-}
+// Re-exported so the tabs keep one import site; the implementation lives in
+// http.js because this module cannot be imported under node --test (see that file).
+export { api } from './http.js';
 
 function wireTabs() {
   const tabs = [...document.querySelectorAll('.tab')];

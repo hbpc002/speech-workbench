@@ -168,7 +168,8 @@ function publishClip(samples, label) {
   const verdict = assess(stats);
 
   clipStats = { ...verdict, stats };
-  clip = pcmToWavBlob(finalSamples, SAMPLE_RATE);
+  // Array-wrapped: pcmToWavBlob takes a list of chunks.
+  clip = pcmToWavBlob([finalSamples], SAMPLE_RATE);
 
   const panel = el('voice-clip-panel');
   panel.hidden = false;
@@ -759,7 +760,7 @@ function playRecord(record) {
 
 function downloadRecord(record) {
   if (!record.chunks.length) return;
-  const blob = pcmToWavBlob(mergeChunks(record.chunks), state.config.tts_sample_rate);
+  const blob = pcmToWavBlob([mergeChunks(record.chunks)], state.config.tts_sample_rate);
   const stamp = new Date(record.createdAt).toISOString().replace(/[-:T]/g, '').slice(0, 14);
   saveBlob(blob, `voice-preview-${stamp}.wav`);
 }

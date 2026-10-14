@@ -405,11 +405,16 @@ export function concatInt16(chunks) {
  * Downloads always go through here, which is why a partially regenerated
  * document still exports as one complete file: the segments are reassembled
  * into a single PCM buffer before the header is written.
+ *
+ * Takes a *list* of chunks. A bare Int16Array is accepted too, because the
+ * mistake is silent and expensive otherwise: iterating an Int16Array yields
+ * numbers, `chunk.length` is undefined, and `concatInt16` returns a zero-length
+ * buffer -- i.e. a valid-looking 44-byte WAV containing digital silence, which
+ * DashScope happily enrolls into a useless voice.
  */
 export function pcmToWavBlob(chunks, sampleRate = 22050) {
-  const pcm = chunks.length === 1 && chunks[0] instanceof Int16Array
-    ? chunks[0]
-    : concatInt16(chunks);
+  const list = chunks instanceof Int16Array ? [chunks] : chunks;
+  const pcm = list.length === 1 && list[0] instanceof Int16Array ? list[0] : concatInt16(list);
 
   const buffer = new ArrayBuffer(44 + pcm.length * 2);
   const view = new DataView(buffer);
