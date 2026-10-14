@@ -1,6 +1,16 @@
 // Shell: login gate, config loading, tab switching, and the small DOM helpers
 // every tab uses.
 
+// Imported, not re-exported in place: `export { api } from './http.js'` gives
+// importers a binding but leaves `api` undefined *inside* this module, and the
+// five call sites below would throw ReferenceError. That broke the auth check,
+// which locked the operator behind the password prompt on every reload even
+// with a valid session cookie.
+import { api } from './http.js';
+
+// One import site for the tabs, now that the implementation lives in http.js.
+export { api };
+
 export const state = {
   config: null,
   prompts: null,
@@ -68,10 +78,6 @@ function showLogin(show, message = '') {
   error.hidden = !message;
   error.textContent = message;
 }
-
-// Re-exported so the tabs keep one import site; the implementation lives in
-// http.js because this module cannot be imported under node --test (see that file).
-export { api } from './http.js';
 
 function wireTabs() {
   const tabs = [...document.querySelectorAll('.tab')];
@@ -210,6 +216,31 @@ async function loadRuntimeConfig() {
   populateFromConfig();
 }
 
+/**
+ * Whether the operator already holds a valid session.
+ *
+ * The try/catch wraps the *call*, not just a promise: `await api(...).catch()`
+ * cannot catch a synchronous throw while evaluating `api` itself, which is
+ * exactly how a ReferenceError in this file used to bypass the fallback and
+ * lock the operator out of their own deployment.
+ *
+ * Defaults to authenticated on any failure. Reaching your own app is the
+ * common case, and /api/config plus the WebSocket auth checks are the real
+ * gates; a transient 500 here should not mean a password prompt on every
+ * reload.
+ */
+async function checkSession() {
+  try {
+    const body = await api('/authcheck');
+    // Only an explicit false asks for the password. A missing field or a
+    // malformed body means "cannot prove unauthenticated", which is the same
+    // position as a network failure.
+    return body?.authenticated !== false;
+  } catch {
+    return true;
+  }
+}
+
 async function boot() {
   wireTabs();
 
@@ -235,8 +266,7 @@ async function boot() {
     }
   });
 
-  const { authenticated } = await api('/authcheck').catch(() => ({ authenticated: true }));
-  if (authenticated) {
+  if (await checkSession()) {
     showLogin(false);
     start();
   } else {
@@ -278,4 +308,9 @@ async function start() {
   });
 }
 
-boot();
+/**
+ * Importing this module must not boot the page: under `node --test` there is
+ * no document, and the tests need to control when and with what DOM it runs.
+ * `http.js` was extracted for the same reason.
+ */
+if (typeof document !== 'undefined') boot();

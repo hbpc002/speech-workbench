@@ -4,6 +4,7 @@
   "type": "module",
   "description": "仅为让 Node 把 static/js/*.js 当作 ESM 解析，并运行 node --test。本项目没有 npm 依赖，也没有构建步骤。",
   "scripts": {
-    "test": "node --test \"tests/js/**/*.test.js\""
+    "test": "node --test \"tests/js/**/*.test.js\"",
+    "e2e": "node tests/e2e_boot.mjs"
   }
 }
