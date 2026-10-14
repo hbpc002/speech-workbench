@@ -21,7 +21,9 @@ export const SAMPLE_RATE = 16000;
 
 // Exported because the UI quotes these numbers back to the user, so the
 // thresholds the copy refers to and the ones enforced are the same values.
-export const MIN_SECONDS = 3;
+// Both come from the official enrollment audio requirements: "推荐 10~20 秒，
+// 最长不超过 60 秒" and "必须包含至少 5 秒连续清晰的朗读内容".
+export const MIN_SECONDS = 5;
 export const MAX_SECONDS = 60;
 
 /** Window used for the level envelope. 20 ms is short enough to catch pauses. */

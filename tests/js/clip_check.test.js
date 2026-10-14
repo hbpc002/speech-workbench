@@ -182,9 +182,18 @@ describe('assess', () => {
   });
 
   it('warns rather than blocks on a shortish clip', () => {
-    const result = assess(analyze(speech(null, 5)));
+    // At or above MIN_SECONDS the hard floor is cleared; the warn comes from
+    // being well short of the 10 s target.
+    const result = assess(analyze(speech(null, MIN_SECONDS + 0.5)));
     assert.equal(result.level, 'warn');
     assert.equal(result.ok, false);
+  });
+
+  it('clears the hard floor at exactly the minimum length', () => {
+    // The upstream floor is "至少 5 秒连续清晰的朗读内容". Five seconds passes
+    // that but is still short of the target, so a warning is correct.
+    const result = assess(analyze(speech(null, MIN_SECONDS)));
+    assert.ok(!result.issues.some((i) => i.severity === 'error'), JSON.stringify(result.issues));
   });
 
   it('rejects a clip that is mostly silence', () => {
@@ -224,7 +233,11 @@ describe('assess', () => {
   });
 
   it('respects a custom target', () => {
-    const result = assess(analyze(speech(null, 3)), { targetSeconds: 30 });
+    // 8 s is fine against the default 10 s target but far short of 30 s. It has
+    // to stay above MIN_SECONDS or the hard floor would fire instead and the
+    // test would no longer be about the target.
+    assert.equal(assess(analyze(speech(null, 8))).level, 'ok');
+    const result = assess(analyze(speech(null, 8)), { targetSeconds: 30 });
     assert.equal(result.level, 'warn');
   });
 
