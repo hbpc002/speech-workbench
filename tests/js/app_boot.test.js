@@ -25,6 +25,7 @@ const realFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  delete globalThis.localStorage;
   uninstallDom();
 });
 
@@ -131,6 +132,87 @@ describe('boot: the auth check itself fails', () => {
     assert.equal(dom.get('login').hidden, true);
   });
 });
+
+/** A catalogue with two voices, so a picker actually has something to choose. */
+const VOICE_CONFIG = {
+  ...CONFIG_BODY,
+  tts_models: [{
+    id: 'cosyvoice-v3-flash',
+    label: 'cosyvoice-v3-flash',
+    default_voice: 'longcheng',
+    groups: ['男声'],
+    supports_instruction: false,
+    voices: [
+      { id: 'longan', name: '龙安洋', trait: '阳光大男孩', group: '男声', lang: 'zh' },
+      { id: 'longcheng', name: '龙橙', trait: '阳光青年', group: '男声', lang: 'zh' },
+    ],
+  }],
+  voice_capabilities: { longan: ['情感', '场景'] },
+};
+
+describe('boot: the remembered voice', () => {
+  /** localStorage as a Map, torn down with the rest of the globals. */
+  function seedLocalStorage(entries = {}) {
+    const data = new Map(Object.entries(entries));
+    globalThis.localStorage = {
+      getItem: (key) => (data.has(key) ? data.get(key) : null),
+      setItem: (key, value) => data.set(key, value),
+    };
+    return data;
+  }
+
+  it('falls back to the catalogue default with no history', async () => {
+    seedLocalStorage();
+    const { dom } = await boot({ ...ROUTES, '/api/config': { body: VOICE_CONFIG } });
+    assert.equal(dom.get('tts-voice').value, 'longcheng');
+    assert.ok(!recentGroup(dom), 'no history should mean no shortcut group');
+  });
+
+  it('wins over the default, and appears at the top of the picker', async () => {
+    // The point of the whole feature: 253 voices, and the one you always use is
+    // still at the top of the list and already selected.
+    seedLocalStorage({ 'recent.ttsVoice': JSON.stringify(['longan']) });
+    const { dom } = await boot({ ...ROUTES, '/api/config': { body: VOICE_CONFIG } });
+    assert.equal(dom.get('tts-voice').value, 'longan');
+    const group = recentGroup(dom);
+    assert.ok(group, 'expected a 最近使用 group');
+    assert.equal(group.label, '最近使用');
+    assert.deepEqual(group.options.map((o) => o.value), ['longan']);
+  });
+
+  it('clones the entry, so the capability suffix survives', async () => {
+    seedLocalStorage({ 'recent.ttsVoice': JSON.stringify(['longan']) });
+    const { dom } = await boot({ ...ROUTES, '/api/config': { body: VOICE_CONFIG } });
+    const [shortcut] = recentGroup(dom).options;
+    assert.match(shortcut.textContent, /〔情感 场景〕/);
+  });
+
+  it('ignores a remembered voice this model does not offer', async () => {
+    // Voices are bound to the model they belong to, so after switching models
+    // the shortcut must fall back rather than offer something that 418s.
+    seedLocalStorage({ 'recent.ttsVoice': JSON.stringify(['qwen-only']) });
+    const { dom } = await boot({ ...ROUTES, '/api/config': { body: VOICE_CONFIG } });
+    assert.ok(!recentGroup(dom));
+    assert.equal(dom.get('tts-voice').value, 'longcheng');
+  });
+
+  it('boots normally when the browser refuses localStorage', async () => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('denied', 'SecurityError');
+      },
+    });
+    const { dom } = await boot({ ...ROUTES, '/api/config': { body: VOICE_CONFIG } });
+    assert.equal(dom.get('login').hidden, true);
+    assert.equal(dom.get('tts-voice').value, 'longcheng');
+  });
+});
+
+/** The 最近使用 optgroup in a booted picker, if there is one. */
+function recentGroup(dom) {
+  return dom.get('tts-voice').children.find((child) => child.dataset.recentVoices !== undefined);
+}
 
 describe('boot: config load fails', () => {
   it('says so on the badge instead of failing silently', async () => {

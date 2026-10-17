@@ -23,13 +23,21 @@ import { actionButton } from '/static/js/actions.js';
 import { api, applySocketStatus, el, state } from '/static/js/app.js';
 import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
+import { createScriptBox } from '/static/js/script_box.js';
 import { applyRules, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
 import { VOICEOVER_PROMPT } from '/static/js/voiceover_prompt.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
 const MODEL_STORAGE_KEY = 'tts.tagModel';
-const TEXT_UNDO_LIMIT = 20;   // a 2000-char script x 20 is still trivial to hold
+
+// Undo covers every change this tab makes to the script box, not just the AI
+// one: 去标签, applying tags, and clearing. Shared with the clone-preview tab so
+// the two cannot drift; see script_box.js.
+const scriptBox = createScriptBox({
+  textarea: el('tts-text'),
+  undoButton: el('tts-undo'),
+});
 
 let socket = null;
 let player = null;
@@ -111,11 +119,12 @@ function renderTagChips() {
 
   if (!supported) {
     // Switching to a model that ignores tags would have them read aloud, so
-    // drop them from the script rather than let it fail downstream.
+    // drop them from the script rather than let it fail downstream. Deliberately
+    // not undoable: the tags are gone because the model cannot say them, and
+    // offering a way back would only invite the same failure again.
     const textarea = el('tts-text');
     if (textarea.value.trim() && hasTags(textarea.value)) {
-      textarea.value = stripTags(textarea.value);
-      textarea.dispatchEvent(new Event('input'));
+      scriptBox.setText(stripTags(textarea.value));
     }
     return;
   }
@@ -170,8 +179,8 @@ function hasTags(text) {
 function stripScriptTags() {
   const textarea = el('tts-text');
   if (!hasTags(textarea.value)) return;
-  pushUndo(textarea.value);
-  setScriptText(stripTags(textarea.value));
+  scriptBox.push(textarea.value);
+  scriptBox.setText(stripTags(textarea.value));
 }
 
 /** Keeps the 去标签 button honest: disabled while there is nothing to remove. */
@@ -188,41 +197,6 @@ let pendingResult = null;
 // script form (写稿 → 生成 → 改参数重来); the two tagging entries have no
 // earlier screen, so they must not offer a way back into the script form.
 let dialogOrigin = null;
-
-// Undo covers every change this tab makes to the script box, not just the AI
-// one: applying tags, and clearing. A stack rather than a single slot, so
-// "tag, then clear" can be walked back one step at a time.
-let textUndo = [];
-
-function syncUndoButton() {
-  el('tts-undo').disabled = textUndo.length === 0;
-}
-
-function pushUndo(text) {
-  textUndo.push(text);
-  if (textUndo.length > TEXT_UNDO_LIMIT) textUndo.shift();
-  syncUndoButton();
-}
-
-function setScriptText(text) {
-  const textarea = el('tts-text');
-  textarea.value = text;
-  textarea.dispatchEvent(new Event('input'));
-}
-
-function undoText() {
-  if (!textUndo.length) return;
-  setScriptText(textUndo.pop());
-  syncUndoButton();
-}
-
-function clearText() {
-  const textarea = el('tts-text');
-  if (!textarea.value) return;
-  pushUndo(textarea.value);
-  setScriptText('');
-  textarea.focus();
-}
 
 function tagOptions() {
   return {
@@ -449,9 +423,8 @@ function applyTagResult() {
     return;
   }
 
-  pushUndo(textarea.value);
-  textarea.value = pendingResult.text;
-  textarea.dispatchEvent(new Event('input'));
+  scriptBox.push(textarea.value);
+  scriptBox.setText(pendingResult.text);
   closeTagDialog();
 }
 
@@ -1040,8 +1013,8 @@ export function init() {
   el('tts-tag-fast').addEventListener('click', requestFastTags);
   el('tts-tag-write').addEventListener('click', openScriptDialog);
   el('tts-tag-strip').addEventListener('click', stripScriptTags);
-  el('tts-undo').addEventListener('click', undoText);
-  el('tts-clear-text').addEventListener('click', clearText);
+  el('tts-undo').addEventListener('click', () => scriptBox.undo());
+  el('tts-clear-text').addEventListener('click', () => scriptBox.clear());
   // Keeps 去标签 disabled until the script actually holds a tag, and picks up
   // the strip renderTagChips() performs when switching to a tag-less model.
   el('tts-text').addEventListener('input', syncStripButton);

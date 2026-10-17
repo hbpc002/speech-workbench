@@ -3,6 +3,7 @@
   --surface: #171a23;
   --surface-2: #1e222d;
   --border: #2a2f3d;
+  --border-hi: #3a4257;
   --text: #e6e8ee;
   --muted: #8b93a7;
   --accent: #6c8cff;
@@ -34,6 +35,10 @@ h2 { font-size: 15px; }
 .grow { flex: 1; min-width: 220px; }
 .error { color: var(--err); }
 
+/* A one-line explanation under a control. Hidden when there is nothing to say,
+   so it costs no vertical gap in a column of controls. */
+.note { margin: 0; font-size: 12.5px; }
+
 /* ---------- login ---------- */
 
 .login-gate {
@@ -58,6 +63,18 @@ h2 { font-size: 15px; }
 }
 
 /* ---------- chrome ---------- */
+
+/* The title bar and the tabs stick together as one block: the tabs sit flush
+   under the title without having to know its height, and there is only one
+   thing to unstick. Nothing between here and <body> clips, which is what
+   `position: sticky` needs. */
+.chrome {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  padding-top: env(safe-area-inset-top);
+}
 
 .topbar {
   display: flex;
@@ -101,9 +118,20 @@ h2 { font-size: 15px; }
 
 /* ---------- panels ---------- */
 
-main { padding: 18px 20px 40px; }
+/* The bottom padding carries the home-indicator inset, so the last card is not
+   half under it on a notched phone. */
+main { padding: 18px 20px calc(40px + env(safe-area-inset-bottom)); }
 
-.panel { display: none; flex-direction: column; gap: 12px; max-width: 980px; }
+/* Centred rather than flush left: on a 27" display a 980px column pinned to the
+   left edge reads as a broken layout. */
+.panel {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
 .panel.active { display: flex; }
 
 .controls {
@@ -125,6 +153,9 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
 
 input, select, textarea {
   padding: 7px 10px;
+  /* A flex child with a fixed width can otherwise push the row wider than the
+     viewport and give the whole page a horizontal scrollbar. */
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);
@@ -132,7 +163,7 @@ input, select, textarea {
   font: inherit;
 }
 
-textarea { resize: vertical; font-family: inherit; }
+textarea { resize: vertical; font-family: inherit; min-height: 6em; }
 input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 
 button {
@@ -149,6 +180,10 @@ button {
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.ghost { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 400; }
 
+/* Keyboard only: a mouse click on a button should not leave a ring behind, but
+   a Tab through the toolbar must show where focus is. */
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .status { font-size: 12px; color: var(--muted); padding-bottom: 8px; }
 .status[data-state="connected"] { color: var(--ok); }
 .status[data-state="reconnecting"],
@@ -160,7 +195,7 @@ button.ghost { background: var(--surface-2); color: var(--text); border-color: v
 /* ---------- transcript ---------- */
 
 .transcript {
-  min-height: 260px;
+  min-height: clamp(240px, 34vh, 420px);
   max-height: 56vh;
   overflow-y: auto;
   padding: 14px;
@@ -237,7 +272,10 @@ button.ghost { background: var(--surface-2); color: var(--text); border-color: v
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+  transition: border-color .12s ease-out;
 }
+
+.voice-row:hover { border-color: var(--border-hi); }
 
 .voice-id { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 
@@ -267,7 +305,7 @@ button.danger:hover:not(:disabled) { background: #3a1f22; }
 
 /* ---------- tts workbench ---------- */
 
-label.slider { min-width: 150px; }
+label.slider { min-width: 180px; }
 label.slider output {
   float: right;
   font-variant-numeric: tabular-nums;
@@ -328,8 +366,10 @@ label.slider input[type="range"] { width: 100%; accent-color: var(--accent); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  transition: border-color .12s ease-out;
 }
 
+.hcard:hover { border-color: var(--border-hi); }
 .hcard.busy { border-color: var(--warn); }
 
 .hhead {
@@ -381,10 +421,16 @@ p.hint {
 /* ---------- mobile ---------- */
 
 @media (max-width: 760px) {
-  main { padding: 12px 12px 48px; }
+  main { padding: 12px 12px calc(48px + env(safe-area-inset-bottom)); }
   .topbar { padding: 10px 14px; }
   .tabs { padding: 8px 10px 0; }
   .tab { padding: 8px 11px; font-size: 13px; }
+
+  /* iOS zooms the viewport when a focused control's font is under 16px, and
+     the zoom survives losing focus -- so a 14px input box means every page
+     reload starts zoomed. Same rule gives touch targets a usable height. */
+  input, select, textarea, button { font-size: 16px; }
+  input, select, button { min-height: 40px; }
 
   .controls { gap: 8px; }
   label.slider { min-width: 100%; }
@@ -485,6 +531,12 @@ p.hint {
 @media (max-width: 340px) {
   .hactions { grid-template-columns: repeat(3, 1fr); }
   .topbar h1 { font-size: 16px; }
+}
+
+/* `.grow` keeps a 220px floor so a select and a button share a row on a
+   laptop; below that the floor is wider than the screen and the row spills. */
+@media (max-width: 420px) {
+  label.grow, label.slider, label.slider.grow { min-width: 0; }
 }
 
 /* ---------- emotion tags ---------- */
@@ -615,6 +667,10 @@ p.hint {
 
 .modal {
   width: min(720px, 92vw);
+  /* The AI dialog holds an 18-row prompt; without a cap it runs past the
+     bottom of a phone screen and the footer's buttons go with it. */
+  max-height: 88vh;
+  overflow-y: auto;
   padding: 20px 22px;
   border: 1px solid var(--border);
   border-radius: var(--radius);

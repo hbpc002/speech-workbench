@@ -118,3 +118,47 @@ describe('WAV assembly', () => {
     assert.ok(count >= 4, `expected at least 4 call sites, found ${count}`);
   });
 });
+
+describe('markup ids', () => {
+  const html = readFileSync(join(JS_DIR, '..', 'index.html'), 'utf8');
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+  const declared = new Set(ids);
+
+  it('finds the ids in index.html at all', () => {
+    // If this ever reads zero, the regex broke and every assertion below would
+    // pass for the wrong reason.
+    assert.ok(declared.size > 50, `expected many ids, found ${declared.size}`);
+  });
+
+  it('declares no id twice', () => {
+    // A duplicate id is silently dropped by the parser's index; two elements end
+    // up sharing one getElementById result and the second listener never fires.
+    // Counted over the raw list, not the set, which would hide exactly this.
+    const seen = new Set();
+    const dupes = new Set();
+    for (const id of ids) {
+      if (seen.has(id)) dupes.add(id);
+      seen.add(id);
+    }
+    assert.deepEqual([...dupes], []);
+  });
+
+  it('gives every el() call an element to land on', () => {
+    // A typo'd or deleted id is a null at the call site: `null.addEventListener`
+    // throws inside init(), which app.js catches and reports as "tab_x.js 初始化
+    // 失败" in the corner badge -- one tab quietly dead, everything else fine.
+    const missing = [];
+    for (const name of files) {
+      const source = readFileSync(join(JS_DIR, name), 'utf8');
+      // el(), plus the two helpers that pass their first argument straight on.
+      for (const match of source.matchAll(/\b(?:el|appendMsg|log)\(\s*'([^']+)'/g)) {
+        if (!declared.has(match[1])) missing.push(`${name} -> #${match[1]}`);
+      }
+    }
+    assert.deepEqual(
+      missing,
+      [],
+      `these ids are referenced by static/js but not declared in index.html:\n${missing.join('\n')}`
+    );
+  });
+});

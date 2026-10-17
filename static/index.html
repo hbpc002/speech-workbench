@@ -19,20 +19,22 @@
 </div>
 
 <div id="app" hidden>
-  <header class="topbar">
-    <h1>语音工坊</h1>
-    <div class="topbar-right">
-      <span class="badge" id="platform-badge"></span>
-      <button class="ghost" id="logout">退出</button>
-    </div>
-  </header>
+  <div class="chrome">
+    <header class="topbar">
+      <h1>语音工坊</h1>
+      <div class="topbar-right">
+        <span class="badge" id="platform-badge"></span>
+        <button class="ghost" id="logout">退出</button>
+      </div>
+    </header>
 
-  <nav class="tabs" id="tabs">
-    <button class="tab active" data-tab="chat">实时语音对话</button>
-    <button class="tab" data-tab="asr">实时语音识别</button>
-    <button class="tab" data-tab="tts">语音合成</button>
-    <button class="tab" data-tab="voice">声音复刻</button>
-  </nav>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="chat">实时语音对话</button>
+      <button class="tab" data-tab="asr">实时语音识别</button>
+      <button class="tab" data-tab="tts">语音合成</button>
+      <button class="tab" data-tab="voice">声音复刻</button>
+    </nav>
+  </div>
 
   <dialog id="tag-help" class="modal">
     <div class="modal-head">
@@ -118,7 +120,7 @@
         <span class="status" id="chat-status">未连接</span>
       </div>
       <div class="controls">
-        <label class="grow">系统提示词 <textarea id="chat-instructions" rows="2"></textarea></label>
+        <label class="grow">系统提示词 <textarea id="chat-instructions" rows="4"></textarea></label>
         <select id="chat-scenario">
           <option value="companion">陪伴对话</option>
           <option value="tool">工具智能体</option>
@@ -204,7 +206,7 @@
       </div>
 
       <label class="grow">文本
-        <textarea id="tts-text" rows="4">你好，这是百炼语音合成示例。</textarea>
+        <textarea id="tts-text" rows="8">你好，这是百炼语音合成示例。</textarea>
       </label>
 
       <div class="controls btn-row">
@@ -213,7 +215,6 @@
         <button class="ghost" id="tts-clear-text">清空文本</button>
         <button class="ghost" id="tts-undo" disabled>撤销</button>
         <button class="ghost danger" id="tts-clear-history">清空历史</button>
-        <span class="status" id="tts-status">未连接</span>
       </div>
 
       <h2 class="list-title">历史记录 <span class="muted" id="tts-count"></span></h2>
@@ -272,16 +273,24 @@
 
       <h2 class="list-title">试听 <span class="muted" id="voice-count"></span></h2>
 
-      <div class="clone-columns">
-        <div class="clone-card">
-          <h2>试听设置</h2>
-          <label>音色 <select id="voice-play-select"></select></label>
-          <label class="grow">文本
-            <textarea id="voice-play-text" rows="2">这是用复刻音色合成的语音。</textarea>
-          </label>
-          <p class="muted" id="voice-model-note"></p>
-        </div>
+      <div class="controls">
+        <label class="grow">音色 <select id="voice-play-select"></select></label>
+      </div>
+      <p class="muted note" id="voice-model-note" hidden></p>
 
+      <label class="grow">试听文本
+        <textarea id="voice-play-text" rows="6">这是用复刻音色合成的语音。</textarea>
+      </label>
+
+      <div class="controls btn-row">
+        <button id="voice-play">生成</button>
+        <button class="ghost" id="voice-stop">停止</button>
+        <button class="ghost" id="voice-clear-text">清空文本</button>
+        <button class="ghost" id="voice-undo" disabled>撤销</button>
+        <button class="ghost danger" id="voice-clear-history">清空历史</button>
+      </div>
+
+      <div class="clone-columns">
         <div class="clone-card">
           <h2>参数</h2>
           <label class="slider">语速 <output id="voice-rate-out">1.00</output>
@@ -295,16 +304,17 @@
           </label>
           <label>种子 <input type="number" id="voice-seed" min="0" max="65535" placeholder="随机" style="width:90px"></label>
         </div>
-      </div>
 
-      <div class="controls">
-        <label>指令 <select id="voice-instruct-kind"></select></label>
-        <label class="grow" id="voice-instruct-value-wrap">取值 <select id="voice-instruct-value"></select></label>
-        <label class="grow" id="voice-instruct-custom-wrap" hidden>自定义指令
-          <input type="text" id="voice-instruct-custom" placeholder="须以句号结尾">
-        </label>
+        <div class="clone-card">
+          <h2>指令</h2>
+          <label>类型 <select id="voice-instruct-kind"></select></label>
+          <label id="voice-instruct-value-wrap">取值 <select id="voice-instruct-value"></select></label>
+          <label id="voice-instruct-custom-wrap" hidden>自定义指令
+            <input type="text" id="voice-instruct-custom" placeholder="须以句号结尾">
+          </label>
+          <p class="muted hint" id="voice-instruct-note" hidden></p>
+        </div>
       </div>
-      <p class="muted hint" id="voice-instruct-note" hidden></p>
 
       <div class="tag-panel" id="voice-tags" hidden>
         <div class="tag-row">
@@ -319,12 +329,6 @@
           <button type="button" class="ghost" id="voice-tag-strip" disabled>去标签</button>
         </div>
         <p class="muted tag-hint">点击插入到光标处。情感标签对其后所有文本生效，直到遇到下一个情感标签。</p>
-      </div>
-
-      <div class="controls btn-row">
-        <button id="voice-play">生成</button>
-        <button class="ghost" id="voice-stop">停止</button>
-        <button class="ghost" id="voice-clear-history">清空历史</button>
       </div>
 
       <div id="voice-history" class="history"></div>

@@ -20,7 +20,20 @@ function makeNode(tag = 'div', id = '') {
     style: {},
     dataset: {},
     children: [],
-    options: [],
+    // Live, like HTMLOptionsCollection: every descendant <option> in tree
+    // order, whatever optgroup it sits in. A static array here hides every
+    // "is this voice still in the list?" question the pickers ask of it.
+    get options() {
+      const found = [];
+      const walk = (parent) => {
+        for (const child of parent.children || []) {
+          if (child.tagName === 'OPTION') found.push(child);
+          else walk(child);
+        }
+      };
+      walk(this);
+      return found;
+    },
     classList: {
       _set: new Set(),
       add(...c) { c.forEach((x) => this._set.add(x)); },
@@ -33,8 +46,28 @@ function makeNode(tag = 'div', id = '') {
     removeEventListener() {},
     dispatchEvent() {},
     appendChild(child) { this.children.push(child); return child; },
+    append(...nodes) { this.children.push(...nodes); },
     removeChild() {},
     remove() {},
+    // The voice pickers: populateVoiceSelect() looks for a stale 最近使用 group
+    // before it adds one, and applyRecent() puts the new one first.
+    get firstChild() { return this.children[0] || null; },
+    insertBefore(child, before) {
+      const at = before ? this.children.indexOf(before) : 0;
+      this.children.splice(at < 0 ? 0 : at, 0, child);
+      return child;
+    },
+    // A copy, so editing the clone cannot rewrite the node it came from -- which
+    // is how the 最近使用 entries are meant to behave.
+    cloneNode() {
+      const copy = makeNode(this.tagName.toLowerCase(), this.id);
+      copy.value = this.value;
+      copy.textContent = this.textContent;
+      copy.label = this.label;
+      copy.dataset = { ...this.dataset };
+      return copy;
+    },
+    querySelector() { return null; },
     setSelectionRange() {},
     focus() {},
     closest() { return null; },
@@ -76,8 +109,6 @@ export function installDom({ ids = [], hash = '' } = {}) {
   for (const id of [...REQUIRED_IDS, ...ids]) {
     nodes.set(id, makeNode('div', id));
   }
-  // A <select> needs an options array for `[...node.options]`.
-  nodes.get('tts-instruct-kind').options = [{ value: '' }];
 
   const document = {
     getElementById: (id) => nodes.get(id) || null,

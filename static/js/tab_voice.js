@@ -38,12 +38,20 @@ import {
 import { actionButton } from '/static/js/actions.js';
 import { api, applySocketStatus, el, log, state } from '/static/js/app.js';
 import { buildInstruction, instructionValues, isVoiceDependent } from '/static/js/instruct.js';
+import { CLONE_VOICE_KEY, applyRecent, loadRecent, localStore, rememberVoice, trackSelection } from '/static/js/recent.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
+import { createScriptBox } from '/static/js/script_box.js';
 import { MAX_SECONDS, SAMPLE_RATE, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, insertAtCaret, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 
 const MAX_PREVIEWS = 30;
 const MAX_CLONE_LOGS = 50;
+
+/** 清空文本 / 撤销 for the preview script, same behaviour as the synthesis tab. */
+const previewText = createScriptBox({
+  textarea: el('voice-play-text'),
+  undoButton: el('voice-undo'),
+});
 
 /** Instruction kinds a cloned voice can plausibly take.
  *
@@ -263,6 +271,7 @@ function noteModelSelection() {
   const note = el('voice-model-note');
   if (!voice) {
     note.textContent = '';
+    note.hidden = true;
     renderTagPanel();
     return;
   }
@@ -270,6 +279,7 @@ function noteModelSelection() {
   note.textContent = known
     ? `该音色复刻自 ${known}，试听会按这个模型合成。`
     : '未查到该音色的复刻模型，将按默认模型合成。';
+  note.hidden = false;
   renderTagPanel();
 }
 
@@ -296,7 +306,7 @@ function renderTagPanel() {
 
   if (!supported) {
     if (hasTags(textarea.value, state.config)) {
-      textarea.value = stripTags(textarea.value, state.config);
+      previewText.setText(stripTags(textarea.value, state.config));
     }
     el('voice-tag-strip').disabled = true;
     return;
@@ -464,8 +474,12 @@ async function refreshVoices({ force = false } = {}) {
     }
 
     // Keep the operator on whatever they had selected; a clone that just
-    // succeeded should become the active voice.
-    if (previous && voiceModels.has(previous)) select.value = previous;
+    // succeeded should become the active voice. Checked against the options
+    // rather than `voiceModels`, which only carries the voices whose
+    // target_model the list reported -- a voice without one could never be
+    // restored, and the picker silently jumped back to the top.
+    applyRecent(select, loadRecent(localStore(), CLONE_VOICE_KEY));
+    if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
     noteModelSelection();
   } catch (error) {
     log('voice-status', `读取音色列表失败：${error.message}`, 'error');
@@ -561,6 +575,9 @@ async function clone() {
     await recordClone({ ...base, voiceId, ok: true, elapsed: Date.now() - startedAt });
     await refreshVoices();
     el('voice-play-select').value = voiceId;
+    // Assigning `.value` fires no `change` event, so the picker's own listener
+    // never runs -- record it here or a freshly cloned voice is not "recent".
+    rememberVoice(localStore(), CLONE_VOICE_KEY, voiceId);
     noteModelSelection();
   } catch (error) {
     log('voice-status', `复刻失败：${error.message}`, 'error');
@@ -788,6 +805,7 @@ function regenerate(record) {
   // identical audio, which looks like the button is broken.
   const params = { ...record.params, seed: nextSeed(record.params?.seed) };
   el('voice-play-select').value = record.voice;
+  rememberVoice(localStore(), CLONE_VOICE_KEY, record.voice);
   startPreview(record.voice, params);
 }
 
@@ -1001,6 +1019,13 @@ export function init() {
     if (file) acceptFile(file);
   });
 
+  el('voice-clear-text').addEventListener('click', () => previewText.clear());
+  el('voice-undo').addEventListener('click', () => previewText.undo());
+
+  // One listener on the <select>: refreshVoices() empties and refills its
+  // options rather than replacing the element.
+  trackSelection(el('voice-play-select'), { storage: localStore(), key: CLONE_VOICE_KEY });
+
   for (const id of ['voice-rate', 'voice-pitch', 'voice-volume']) {
     el(id).addEventListener('input', syncOutputs);
   }
@@ -1015,8 +1040,10 @@ export function init() {
   el('voice-tag-strip').addEventListener('click', () => {
     const textarea = el('voice-play-text');
     if (!hasTags(textarea.value, state.config)) return;
-    textarea.value = stripTags(textarea.value, state.config);
-    syncStripButton();
+    // Undoable like the synthesis tab's: stripping tags is as destructive as
+    // clearing the box, and the tags were typed one click at a time.
+    previewText.push(textarea.value);
+    previewText.setText(stripTags(textarea.value, state.config));
   });
 
   const kindSelect = el('voice-instruct-kind');

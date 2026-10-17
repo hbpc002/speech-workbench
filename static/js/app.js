@@ -7,6 +7,7 @@
 // which locked the operator behind the password prompt on every reload even
 // with a valid session cookie.
 import { api } from './http.js';
+import { TTS_VOICE_KEY, applyRecent, loadRecent, localStore, trackSelection } from './recent.js';
 
 // One import site for the tabs, now that the implementation lives in http.js.
 export { api };
@@ -88,6 +89,10 @@ function wireTabs() {
         panel.classList.toggle('active', panel.dataset.panel === tab.dataset.tab);
       }
       history.replaceState(null, '', `#${tab.dataset.tab}`);
+      // Panels differ in height, so a scroll position that was right for the
+      // old one can land the new one halfway down. Optional call, because the
+      // boot tests import this module without a window.
+      globalThis.scrollTo?.({ top: 0 });
     });
   }
   const initial = location.hash.replace('#', '');
@@ -138,7 +143,14 @@ function populateVoiceSelect(node, model, selected) {
     }
     node.appendChild(optgroup);
   }
-  if (selected) node.value = selected;
+  // 253 entries across twelve groups is a lot to scroll past every time, so the
+  // ones already picked get a shortcut at the top. Entries belonging to another
+  // model are dropped by applyRecent; the surviving one then wins over the
+  // catalogue default, which is the whole point of remembering it.
+  const recent = loadRecent(localStore(), TTS_VOICE_KEY);
+  applyRecent(node, recent);
+  const remembered = recent.find((id) => [...node.options].some((o) => o.value === id));
+  if (remembered || selected) node.value = remembered || selected;
 }
 
 function syncTtsSelectors() {
@@ -197,6 +209,9 @@ function populateFromConfig() {
     populateInstructionKinds();
     el('tts-instruct-kind').dispatchEvent(new Event('change'));
   });
+  // Attached to the <select>, which is never replaced -- only its options are
+  // rebuilt -- so one listener covers every model switch.
+  trackSelection(el('tts-voice'), { storage: localStore(), key: TTS_VOICE_KEY });
 
   selectInto(el('voice-model'), cfg.clone_models);
 
