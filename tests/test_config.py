@@ -1,5 +1,7 @@
 """Config parsing and, more importantly, what must never leave the server."""
 
+import re
+
 import pytest
 
 from server import config
@@ -162,3 +164,36 @@ class TestPublicConfig:
 @pytest.mark.parametrize("raw", ["", "  ", ",,,"])
 def test_parse_models_never_raises(raw):
     config._parse_models(raw)
+
+class TestDefaultLlmModel:
+    """The shipped default, not just the parsing.
+
+    A typo in `LLM_MODELS` is invisible until someone clicks a button: the picker
+    is filled from the same list the picker validates against, so the bad id is
+    accepted locally and only fails upstream as "模型 X 不存在". These are the
+    checks that catch it in CI instead.
+    """
+
+    def test_the_default_is_the_first_entry(self):
+        # The browser sends the model id it was given; anything else would send an
+        # id that resolve_model() may not know.
+        assert config.LLM_MODELS
+        assert config.LLM_MODEL == config.LLM_MODELS[0]["id"]
+
+    def test_every_shipped_id_looks_like_an_upstream_model_id(self):
+        for item in config.LLM_MODELS:
+            assert re.fullmatch(r"[a-z0-9][a-z0-9.-]*", item["id"]), item
+
+    def test_every_entry_is_labelled(self):
+        # tab_tts.js and tab_voice.js both render item.name in a <select>; a blank
+        # one is an unclickable row.
+        for item in config.LLM_MODELS:
+            assert item["name"], item
+
+    def test_the_default_is_not_a_retired_model(self):
+        # 百炼 retires models on a schedule and states that a retiring model's
+        # QPM/TPM "will gradually decrease" from the notice date -- which looks
+        # exactly like random 429s. If this fails, the model went into a
+        # deprecation batch and LLM_MODEL needs to move.
+        retired = {"qwen-turbo"}  # 下线公告日 2026-10-10
+        assert config.LLM_MODEL not in retired

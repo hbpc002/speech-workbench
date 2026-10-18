@@ -177,7 +177,18 @@ LLM_BASE_URL = _env(
 LLM_API_KEY = _env("LLM_API_KEY", default=API_KEY)
 
 # "id:显示名,id:显示名"，显示名只给前端下拉用，id 才是发给上游的。
-LLM_MODELS = _parse_models(_env("LLM_MODELS", default="qwen-turbo:快速,qwen-plus:均衡"))
+#
+# 默认是 qwen-flash 而不是 qwen-turbo：后者已被百炼列入下线批次（公告日 2026-10-10），
+# 而官方下线机制写明「下线公告发布后 QPM/TPM 会逐步下降」—— 症状就是用着用着突然
+# 429。qwen-flash 同属 Flash 档、标注这种活够用，限额反而宽出一个量级
+# （RPM 30000 / TPM 1000 万，对比 turbo 的 1200 / 500 万），单价也更低。
+# qwen-turbo 留在列表最后：还能用，但要清楚它随时会消失。
+LLM_MODELS = _parse_models(
+    _env(
+        "LLM_MODELS",
+        default="qwen-flash:均衡,qwen3.8-flash:最新,qwen-plus:较强,qwen-turbo:旧版待下线",
+    )
+)
 LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")
 
 # 拟声标签是让口播听起来像真人说话的关键，所以默认就开着，且用量给得比较宽。
@@ -269,9 +280,9 @@ TAGS_TOPIC_HINTS = [
 ]
 
 # 标注接口的本地限流。两个作用：防刷接口烧 token，以及——更要紧的——不让自己的
-# 上游额度被自己打爆。百炼对 qwen-turbo 的 RPM 限制按主账号合并计算，还要叠加一层
-# 「请求量突增触发的稳定性保护」，所以这个数字必须明显低于上游额度，而不是一个
-# 「随便点」的量。正常用一次标注要好几秒，一分钟里点 8 次已经是不像人话了。
+# 上游额度被自己打爆。百炼的限流按主账号合并计算，还要叠加一层「请求量突增触发的
+# 稳定性保护」，所以这个数字必须明显低于上游额度，而不是一个「随便点」的量。
+# 正常用一次标注要好几秒，一分钟里点 8 次已经是不像人话了。
 TAGS_LIMIT_MAX_ATTEMPTS = _env_int("TAGS_LIMIT_MAX_ATTEMPTS", default=8)
 TAGS_LIMIT_WINDOW_SECONDS = _env_int("TAGS_LIMIT_WINDOW_SECONDS", default=60)
 TAGS_LIMIT_LOCKOUT_SECONDS = _env_int("TAGS_LIMIT_LOCKOUT_SECONDS", default=120)
