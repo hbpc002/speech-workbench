@@ -12,7 +12,15 @@ function makeNode(tag = 'div', id = '') {
     id,
     hidden: false,
     textContent: '',
-    innerHTML: '',
+    // Assigning '' empties the element, so a handler that clears a list before
+    // refilling it actually clears it. As a plain data property it silently
+    // accumulated every option instead.
+    _innerHTML: '',
+    get innerHTML() { return this._innerHTML; },
+    set innerHTML(value) {
+      this._innerHTML = value;
+      if (value === '') this.children = [];
+    },
     value: '',
     type: '',
     disabled: false,
@@ -44,7 +52,12 @@ function makeNode(tag = 'div', id = '') {
     listeners: {},
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
     removeEventListener() {},
-    dispatchEvent() {},
+    // Real, not a no-op: the script boxes announce every write with an `input`
+    // event and the 去标签 buttons keep their disabled state in sync from it, so
+    // a stub that swallows events hides exactly the bugs worth catching.
+    dispatchEvent(event) {
+      for (const handler of this.listeners[event.type] || []) handler(event);
+    },
     appendChild(child) { this.children.push(child); return child; },
     append(...nodes) { this.children.push(...nodes); },
     removeChild() {},
@@ -70,6 +83,11 @@ function makeNode(tag = 'div', id = '') {
     querySelector() { return null; },
     setSelectionRange() {},
     focus() {},
+    // `<dialog>`: the AI dialog is opened, closed and re-opened by the tab, and
+    // showModal() throws when it is already open -- so the stub has to track it.
+    open: false,
+    showModal() { this.open = true; },
+    close() { this.open = false; },
     closest() { return null; },
     getAttribute() { return null; },
     setAttribute() {},

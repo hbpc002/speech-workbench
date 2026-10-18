@@ -8,18 +8,16 @@
 // with a valid session cookie.
 import { api } from './http.js';
 import { TTS_VOICE_KEY, applyRecent, loadRecent, localStore, trackSelection } from './recent.js';
+// Imported, not re-exported in place: `export { el } from './dom.js'` gives
+// importers a binding but leaves `el` undefined *inside* this module, and the
+// dozens of call sites below would throw ReferenceError.
+import { el, state } from './dom.js';
 
 // One import site for the tabs, now that the implementation lives in http.js.
 export { api };
 
-export const state = {
-  config: null,
-  prompts: null,
-};
-
-export function el(id) {
-  return document.getElementById(id);
-}
+// Re-exported for the tabs, which have always imported them from here.
+export { el, state };
 
 export function setStatus(id, text, kind = '') {
   const node = el(id);

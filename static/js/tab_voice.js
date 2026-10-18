@@ -27,11 +27,13 @@ import {
   deleteVoiceMeta,
   deleteVoicePreview,
   loadVoiceClones,
+  loadVoiceListCache,
   loadVoiceMeta,
   loadVoicePreviews,
   pcmToWavBlob,
   saveBlob,
   saveVoiceClone,
+  saveVoiceListCache,
   saveVoiceMeta,
   saveVoicePreview,
 } from '/static/js/audio.js';
@@ -41,8 +43,9 @@ import { buildInstruction, instructionValues, isVoiceDependent } from '/static/j
 import { CLONE_VOICE_KEY, applyRecent, loadRecent, localStore, rememberVoice, trackSelection } from '/static/js/recent.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
+import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } from '/static/js/tag_dialog.js';
 import { MAX_SECONDS, SAMPLE_RATE, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
-import { allKnownTags, hasTags, insertAtCaret, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
+import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 
 const MAX_PREVIEWS = 30;
 const MAX_CLONE_LOGS = 50;
@@ -52,6 +55,35 @@ const previewText = createScriptBox({
   textarea: el('voice-play-text'),
   undoButton: el('voice-undo'),
 });
+
+/**
+ * Shared with the synthesis tab: AI 加情感标签, 快速标注 and AI 写口播稿 all run
+ * through the one `<dialog>` in the markup, and it needs to be told at open time
+ * that this tab's box is the generation one.
+ *
+ * The tagging model preference is the same localStorage key the synthesis tab
+ * writes, so both pickers come back on the same model after a reload.
+ */
+const TAG_MODEL_KEY = 'tts.tagModel';
+
+const cloneTagger = createTagTagger({
+  textarea: el('voice-play-text'),
+  scriptBox: previewText,
+  supportsTags: tagsSupported,
+  readOptions: cloneTagOptions,
+  // Refusals belong with the rest of this tab's messages; voice-status is the
+  // line 复刻成功 / 复刻失败 already uses.
+  report: (message) => log('voice-status', message, 'error'),
+  label: '生成文本',
+});
+
+function cloneTagOptions() {
+  return {
+    model: el('voice-tag-model').value,
+    density: el('voice-tag-density').value || 'normal',
+    rich_level: el('voice-tag-rich').value || 'light',
+  };
+}
 
 /** Instruction kinds a cloned voice can plausibly take.
  *
@@ -86,6 +118,18 @@ let voiceModels = new Map();
 let voiceMeta = new Map();
 /** The tag currently filtering the list, or '' for all. */
 let filterTag = '';
+/**
+ * The cloned voices currently on screen, and the single source both the render
+ * and the local cache are written from.
+ *
+ * Fetching updates it; deleting or cloning edits it in place so the local cache
+ * survives an unreachable upstream. Never mutated from the cache render -- that
+ * one is a snapshot of what was true when it was saved.
+ */
+let voiceList = [];
+/** When the list on screen was obtained, and whether from this browser's cache. */
+let voiceListFetchedAt = 0;
+let voiceListFromCache = false;
 
 /** Display name: the operator's alias if they set one, else the id. */
 function labelFor(voiceId) {
@@ -126,7 +170,7 @@ async function setVoiceMeta(voiceId, patch) {
 function renameVoice(voiceId) {
   const current = voiceMeta.get(voiceId)?.alias || '';
   const next = window.prompt(
-    '起个本地别名，方便在列表和试听下拉里认出来。\n' +
+    '起个本地别名，方便在列表和生成音色下拉里认出来。\n' +
     '不会改上游的音色 ID —— 上游没有改名接口，别名只存在这台设备上。',
     current
   );
@@ -151,6 +195,12 @@ function editTags(voiceId) {
 
 function clockOf(ts) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+/** Date and time, for saying when a cached list was written. */
+function stampOf(ts) {
+  if (!ts) return '某个时间';
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function secondsOf(chunks) {
@@ -277,7 +327,7 @@ function noteModelSelection() {
   }
   const known = voiceModels.get(voice);
   note.textContent = known
-    ? `该音色复刻自 ${known}，试听会按这个模型合成。`
+    ? `该音色复刻自 ${known}，生成时用这个模型。`
     : '未查到该音色的复刻模型，将按默认模型合成。';
   note.hidden = false;
   renderTagPanel();
@@ -308,19 +358,53 @@ function renderTagPanel() {
     if (hasTags(textarea.value, state.config)) {
       previewText.setText(stripTags(textarea.value, state.config));
     }
-    el('voice-tag-strip').disabled = true;
+    syncTagActions({
+      ids: CLONE_TAG_IDS,
+      supported: false,
+      syncStrip: () => {
+        el('voice-tag-strip').disabled = true;
+      },
+    });
     return;
   }
 
   renderChips(el('voice-control-tags'), tagChips(state.config), {
     create: (tag) => document.createElement(tag),
-    onPick: (tag) => insertAtCaret(textarea, tag),
+    onPick: (tag) => previewText.insertTag(tag),
   });
   renderChips(el('voice-rich-tags'), tagChips(state.config, { rich: true }), {
     create: (tag) => document.createElement(tag),
-    onPick: (tag) => insertAtCaret(textarea, tag),
+    onPick: (tag) => previewText.insertTag(tag),
   });
-  syncStripButton();
+  syncTagActions({
+    ids: CLONE_TAG_IDS,
+    supported: true,
+    configured: aiConfigured(),
+    syncStrip: syncStripButton,
+  });
+}
+
+const CLONE_TAG_IDS = {
+  ai: 'voice-tag-ai',
+  fast: 'voice-tag-fast',
+  write: 'voice-tag-write',
+  note: 'voice-tag-note',
+};
+
+/** The 标注参数 row. Same preference key as the synthesis tab, so both agree. */
+function renderTagOptions() {
+  const tagger = state.config.llm || {};
+  const tags = state.config.tags || {};
+
+  let preferred = '';
+  try {
+    preferred = localStorage.getItem(TAG_MODEL_KEY) || '';
+  } catch (_) {
+    /* private mode; the server default is fine */
+  }
+  fillSelect(el('voice-tag-model'), tagger.models || [], preferred || tagger.default_model || '');
+  fillSelect(el('voice-tag-density'), tags.densities || [], 'normal');
+  fillSelect(el('voice-tag-rich'), tags.rich_levels || [], tags.default_rich_level || 'light');
 }
 
 function syncStripButton() {
@@ -353,45 +437,80 @@ function matchesFilter(entry) {
 }
 
 async function refreshVoices({ force = false } = {}) {
-  const container = el('voice-list');
-  const select = el('voice-play-select');
   try {
     // `force` is what the 刷新列表 button sends: it bypasses the server's
     // success and failure caches so the button cannot answer from a stale list
     // or from a recorded timeout.
     const response = await api(`/api/voices${force ? '?refresh=true' : ''}`);
     const list = Array.isArray(response.voices) ? response.voices : [];
-    const previous = select.value;
-    container.innerHTML = '';
-    select.innerHTML = '';
-    voiceModels = new Map();
-
-    renderTagFilter();
-
-    // A stale list is shown on purpose -- it still lets the operator see and
-    // delete what they cloned -- but it must not look current.
-    const staleBanner = el('voice-stale');
-    staleBanner.hidden = !response.stale;
-    if (response.stale) {
-      staleBanner.textContent = `显示的是上一次成功获取的列表，可能不是最新的。${response.warning || ''}`;
-      log('voice-status', '音色列表是上一次的缓存，点「刷新列表」重试。', 'error');
+    voiceList = list;
+    voiceListFetchedAt = Date.now();
+    voiceListFromCache = false;
+    renderVoiceList(list, { stale: response.stale, warning: response.warning });
+    // The local copy is what the next page load paints before the network
+    // answers, so it is written on every success, never on failure.
+    saveVoiceListCache(list).catch(() => {});
+  } catch (error) {
+    // Whatever is already on screen -- fetched or restored from the local cache
+    // -- stays there. A list the operator can still act on beats an empty tab.
+    log('voice-status', `读取音色列表失败：${error.message}`, 'error');
+    // And it must not look current: say when it was actually last confirmed.
+    const banner = el('voice-stale');
+    if (voiceList.length) {
+      banner.textContent = voiceListFromCache
+        ? `刷新失败，下面是这台设备缓存的列表（${stampOf(voiceListFetchedAt)}）。`
+        : `刷新失败，下面是 ${stampOf(voiceListFetchedAt)} 拿到的列表。`;
+      banner.hidden = false;
     }
+  }
+}
 
-    if (!list.length) {
-      container.innerHTML = '<p class="muted">还没有复刻过音色。</p>';
-      el('voice-list-count').textContent = '';
-      noteModelSelection();
-      return;
-    }
+/** Paint the list. `fromCache` marks it as this browser's last known state. */
+function renderVoiceList(list, { stale = false, warning = '', fromCache = false, fetchedAt = 0 } = {}) {
+  const container = el('voice-list');
+  const select = el('voice-play-select');
+  // Only the cached render carries its own timestamp and provenance; a fetch
+  // sets both before calling, and the local edits after a delete or a clone must
+  // not move them.
+  if (fromCache) {
+    voiceListFetchedAt = fetchedAt || 0;
+    voiceListFromCache = true;
+  }
+  const previous = select.value;
+  container.innerHTML = '';
+  select.innerHTML = '';
+  voiceModels = new Map();
 
-    const visible = list.filter(matchesFilter);
-    el('voice-list-count').textContent = visible.length
-      ? `${visible.length} / ${list.length} 个`
+  renderTagFilter();
+
+  // A stale list is shown on purpose -- it still lets the operator see and
+  // delete what they cloned -- but it must not look current.
+  const staleBanner = el('voice-stale');
+  const staleMessage = fromCache
+    ? `显示的是这台设备 ${stampOf(fetchedAt)} 的列表${voiceListFetchedAt ? '，正在刷新…' : ''}。`
+    : stale
+      ? `显示的是上一次成功获取的列表，可能不是最新的。${warning || ''}`
       : '';
+  staleBanner.hidden = !staleMessage;
+  staleBanner.textContent = staleMessage;
+  if (stale) log('voice-status', '音色列表是上一次的缓存，点「刷新列表」重试。', 'error');
 
-    if (!visible.length) {
-      container.innerHTML = `<p class="muted">没有带「${filterTag}」标签的音色。</p>`;
-    }
+  if (!list.length) {
+    // An empty cache is not an error: it just means nothing was cloned yet.
+    container.innerHTML = '<p class="muted">还没有复刻过音色。</p>';
+    el('voice-list-count').textContent = '';
+    noteModelSelection();
+    return;
+  }
+
+  const visible = list.filter(matchesFilter);
+  el('voice-list-count').textContent = visible.length
+    ? `${visible.length} / ${list.length} 个`
+    : '';
+
+  if (!visible.length) {
+    container.innerHTML = `<p class="muted">没有带「${filterTag}」标签的音色。</p>`;
+  }
 
     for (const entry of visible) {
       const voiceId = entry.voice_id || entry.voiceId || String(entry);
@@ -481,9 +600,6 @@ async function refreshVoices({ force = false } = {}) {
     applyRecent(select, loadRecent(localStore(), CLONE_VOICE_KEY));
     if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
     noteModelSelection();
-  } catch (error) {
-    log('voice-status', `读取音色列表失败：${error.message}`, 'error');
-  }
 }
 
 async function deleteOne(voiceId, button) {
@@ -503,16 +619,29 @@ async function deleteOne(voiceId, button) {
     voiceMeta.delete(voiceId);
     await deleteVoiceMeta(voiceId).catch(() => {});
     await recordClone({ voiceId, action: 'delete', ok: true });
-    await refreshVoices();
+    // Dropped locally rather than refetched: the upstream call is what just
+    // succeeded, and re-listing it would burn a round trip to learn something we
+    // already know. The local cache is updated from the same list.
+    voiceList = voiceList.filter((entry) => voiceIdOf(entry) !== voiceId);
+    saveVoiceListCache(voiceList).catch(() => {});
+    renderVoiceList(voiceList);
   } catch (error) {
     if (button) button.disabled = false;
     log('voice-status', `删除 ${voiceId} 失败：${error.message}`, 'error');
   }
 }
 
+/** Upstream has used both spellings over the years; the cache stores ours. */
+function voiceIdOf(entry) {
+  return entry.voice_id || entry.voiceId || String(entry);
+}
+
 async function clearAll() {
-  const { voices } = await api('/api/voices').catch(() => ({ voices: [] }));
-  const list = Array.isArray(voices) ? voices : [];
+  // Enumerate what is on screen; only reach for the API when the local list is
+  // empty, which is the case on a fresh load before the first fetch lands.
+  const list = voiceList.length
+    ? voiceList
+    : await api('/api/voices').then((r) => (Array.isArray(r.voices) ? r.voices : [])).catch(() => []);
   if (!list.length) {
     log('voice-status', '没有可清理的音色', 'system');
     return;
@@ -522,17 +651,19 @@ async function clearAll() {
   // still want and not have looked at this tab in weeks.
   const confirmed = window.confirm(
     `将删除全部 ${list.length} 个复刻音色，此操作不可撤销：\n\n` +
-    list.map((entry) => `  ${entry.voice_id || entry.voiceId || entry}`).join('\n')
+    list.map((entry) => `  ${voiceIdOf(entry)}`).join('\n')
   );
   if (!confirmed) return;
 
   let failed = 0;
+  const deletedIds = new Set();
   for (const entry of list) {
-    const voiceId = entry.voice_id || entry.voiceId || String(entry);
+    const voiceId = voiceIdOf(entry);
     const ok = await api(`/api/voices/${encodeURIComponent(voiceId)}`, { method: 'DELETE' })
       .then(() => true)
       .catch(() => false);
-    if (!ok) failed++;
+    if (ok) deletedIds.add(voiceId);
+    else failed++;
   }
   log(
     'voice-status',
@@ -542,14 +673,18 @@ async function clearAll() {
   if (failed) log('voice-status', '失败的可以单独重试，配额未回收干净', 'error');
   // Their aliases and tags referenced ids that are gone.
   for (const entry of list) {
-    const voiceId = entry.voice_id || entry.voiceId || String(entry);
+    const voiceId = voiceIdOf(entry);
     if (voiceMeta.has(voiceId)) {
       voiceMeta.delete(voiceId);
       deleteVoiceMeta(voiceId).catch(() => {});
     }
   }
   await recordClone({ action: 'clearAll', count: list.length - failed, failed, ok: failed === 0 });
-  await refreshVoices();
+  // Only the deletions that actually worked are gone; the rest stay on screen
+  // so they can be retried one by one.
+  voiceList = list.filter((entry) => !deletedIds.has(voiceIdOf(entry)));
+  saveVoiceListCache(voiceList).catch(() => {});
+  renderVoiceList(voiceList);
 }
 
 // ---- cloning ---------------------------------------------------------------
@@ -573,7 +708,25 @@ async function clone() {
     const { voice_id: voiceId } = await api('/api/voices', { method: 'POST', body: form });
     log('voice-status', `复刻成功：${voiceId}`, 'system');
     await recordClone({ ...base, voiceId, ok: true, elapsed: Date.now() - startedAt });
-    await refreshVoices();
+    // Shown right away, as still under review, because that is what the operator
+    // would see for the next minute anyway: the voice needs to pass review before
+    // it can synthesise. The authoritative list follows in the background.
+    voiceList = [
+      {
+        voice_id: voiceId,
+        target_model: targetModel,
+        prefix,
+        status: 'DEPLOYING',
+        status_label: '审核中',
+        status_class: 'warn',
+        gmt_create: new Date().toISOString(),
+      },
+      ...voiceList,
+    ];
+    saveVoiceListCache(voiceList).catch(() => {});
+    renderVoiceList(voiceList);
+    refreshVoices();
+
     el('voice-play-select').value = voiceId;
     // Assigning `.value` fires no `change` event, so the picker's own listener
     // never runs -- record it here or a freshly cloned voice is not "recent".
@@ -821,10 +974,14 @@ function previewStatus(record) {
 function renderHistory() {
   const box = el('voice-history');
   box.innerHTML = '';
+  // Same reason as the synthesis tab: clearing while a record is still
+  // generating lets finishPreview() write that record back into IndexedDB, and
+  // it turns up again on the next load with nothing left to delete it.
+  el('voice-clear-history').disabled = Boolean(busyPreview);
   el('voice-count').textContent = previews.length ? `（${previews.length} 条）` : '';
 
   if (!previews.length) {
-    box.innerHTML = '<p class="muted">还没有试听记录。选一个复刻音色后点“朗读”，每次都会新增一条。</p>';
+    box.innerHTML = '<p class="muted">还没有生成记录。选一个复刻音色后点“生成”，每次都会新增一条。</p>';
     return;
   }
 
@@ -1009,6 +1166,12 @@ export function init() {
 
   el('voice-clear-history').addEventListener('click', async () => {
     if (!previews.length) return;
+    // Each record holds the audio it generated, and there is no way back to it.
+    const confirmed = window.confirm(
+      `清空 ${previews.length} 条生成记录？\n\n` +
+      '每条记录里的音频都会一起删掉，删了找不回来。复刻出来的音色不受影响。'
+    );
+    if (!confirmed) return;
     previews = [];
     renderHistory();
     await clearVoicePreviews().catch(() => {});
@@ -1021,6 +1184,20 @@ export function init() {
 
   el('voice-clear-text').addEventListener('click', () => previewText.clear());
   el('voice-undo').addEventListener('click', () => previewText.undo());
+
+  el('voice-tag-ai').addEventListener('click', cloneTagger.openTags);
+  el('voice-tag-fast').addEventListener('click', cloneTagger.openFast);
+  el('voice-tag-write').addEventListener('click', cloneTagger.openScript);
+  el('voice-tag-help-btn').addEventListener('click', openHelp);
+
+  el('voice-tag-model').addEventListener('change', (event) => {
+    try {
+      localStorage.setItem(TAG_MODEL_KEY, event.target.value);
+    } catch (_) {
+      /* private mode; the choice just will not persist */
+    }
+  });
+  renderTagOptions();
 
   // One listener on the <select>: refreshVoices() empties and refills its
   // options rather than replacing the element.
@@ -1070,13 +1247,37 @@ export function init() {
     })
     .catch(() => {});
 
+  // Aliases and tags have to be in place before the first paint, or every row
+  // shows its raw id and renames itself a moment later.
   loadVoiceMeta()
     .then((rows) => {
       voiceMeta = new Map((rows || []).map((row) => [row.id, row]));
-      return refreshVoices();
+      return paintVoices();
     })
-    .catch(() => refreshVoices());
+    .catch(() => paintVoices());
 
   renderHistory();
   renderCloneLog();
+}
+
+/**
+ * The local copy first, then the network.
+ *
+ * The list comes from an outbound DashScope call behind two server-side caches;
+ * on a cold instance it can take its full 20 s timeout to fail, which is why the
+ * operator learned to press 刷新列表 by hand. Painting the cached copy first
+ * means the tab opens with something on it, and the fetch that follows either
+ * confirms it or replaces it.
+ */
+function paintVoices() {
+  return loadVoiceListCache()
+    .then((row) => {
+      if (!row || !Array.isArray(row.voices)) return;
+      renderVoiceList(row.voices, { fromCache: true, fetchedAt: row.fetchedAt });
+    })
+    .catch(() => {
+      // Private mode, or a database predating this store. Not an error: the
+      // fetch below still fills the list.
+    })
+    .then(() => refreshVoices());
 }

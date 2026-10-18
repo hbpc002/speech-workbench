@@ -524,8 +524,8 @@ export function floatToInt16(source) {
  * not the next, so the store list lives here rather than at the call sites.
  */
 const DB_NAME = 'speech-workbench';
-const DB_VERSION = 3;
-const STORES = ['tts-records', 'voice-previews', 'voice-clones', 'voice-meta'];
+const DB_VERSION = 4;
+const STORES = ['tts-records', 'voice-previews', 'voice-clones', 'voice-meta', 'voice-list'];
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -599,6 +599,31 @@ export const saveVoiceMeta = saveIn('voice-meta');
 export const loadVoiceMeta = loadFrom('voice-meta');
 export const deleteVoiceMeta = removeFrom('voice-meta');
 export const clearVoiceMeta = clearStore('voice-meta');
+
+/**
+ * The last list of cloned voices this browser fetched, kept so the page can
+ * paint before the network answers.
+ *
+ * `/api/voices` is an outbound DashScope call behind two server-side caches, and
+ * on a cold instance it can take its full 20 s timeout to fail. Without this the
+ * operator opens the tab to an empty list -- or an error -- and presses
+ * 刷新列表 by hand every single time.
+ *
+ * One record, not a row per voice: the payload is the described entries the UI
+ * already renders, rewritten wholesale on every successful fetch, so there is
+ * nothing to reconcile. `fetchedAt` is what the stale banner shows.
+ */
+const VOICE_LIST_RECORD = 'list';
+
+export const saveVoiceListCache = (voices) =>
+  tx('voice-list', 'readwrite', (store) =>
+    store.put({ id: VOICE_LIST_RECORD, voices, fetchedAt: Date.now() })
+  );
+
+export const loadVoiceListCache = () =>
+  tx('voice-list', 'readonly', (store) => store.get(VOICE_LIST_RECORD)).then((row) => row || null);
+
+export const clearVoiceListCache = () => tx('voice-list', 'readwrite', (store) => store.clear());
 
 /** Stable id for one sentence inside one record. */
 export function segmentKey(recordId, index) {

@@ -23,10 +23,16 @@ import { UNDO_LIMIT, createScriptBox } from '../../static/js/script_box.js';
 function fakeTextarea(value = '') {
   return {
     value,
+    selectionStart: value.length,
+    selectionEnd: value.length,
     focused: false,
     inputs: 0,
     focus() {
       this.focused = true;
+    },
+    setSelectionRange(a, b) {
+      this.selectionStart = a;
+      this.selectionEnd = b;
     },
     dispatchEvent(event) {
       if (event.type === 'input') this.inputs += 1;
@@ -161,6 +167,61 @@ describe('script box: the stack depth', () => {
     textarea.value = 'v4';
     box.undo();
     assert.equal(textarea.value, 'v3');
+  });
+});
+
+describe('script box: tag chips', () => {
+  it('drops the tag in at the caret and leaves it there', () => {
+    const { textarea, box } = setup('今天带大家去看露营装备。');
+    textarea.selectionStart = 4;
+    textarea.selectionEnd = 4;
+    box.insertTag('[sad]');
+    assert.equal(textarea.value, '今天带大[sad]家去看露营装备。');
+    // Caret after what was inserted, so the next chip lands next to this one.
+    assert.equal(textarea.selectionStart, 4 + '[sad]'.length);
+    assert.equal(textarea.selectionEnd, textarea.selectionStart);
+    assert.equal(textarea.focused, true);
+  });
+
+  it('is undoable', () => {
+    // One chip, one step: the point of a chip is placing them one at a time.
+    const { textarea, box } = setup('原稿。');
+    box.insertTag('[excited]');
+    assert.equal(box.depth(), 1);
+    box.undo();
+    assert.equal(textarea.value, '原稿。');
+    assert.equal(box.depth(), 0);
+  });
+
+  it('walks back one chip at a time', () => {
+    // The caret starts at the end, so the chips queue up there -- and that is
+    // the point: two clicks are two decisions, not one batch.
+    const { textarea, box } = setup('原稿。');
+    box.insertTag('[excited]');
+    box.insertTag('[whispers]');
+    assert.equal(textarea.value, '原稿。[excited][whispers]');
+    box.undo();
+    assert.equal(textarea.value, '原稿。[excited]');
+    box.undo();
+    assert.equal(textarea.value, '原稿。');
+  });
+
+  it('announces the write, so 去标签 turns clickable', () => {
+    // The bug this closes: a chip used to set .value directly, so the button
+    // stayed greyed out with a tag sitting in the text.
+    const { textarea, box } = setup('原稿。');
+    textarea.inputs = 0;
+    box.insertTag('[sad]');
+    assert.equal(textarea.inputs, 1);
+    assert.equal(box.depth(), 1, 'and it must be on the undo stack');
+  });
+
+  it('replaces the current selection', () => {
+    const { textarea, box } = setup('请删掉这句话。');
+    textarea.selectionStart = 0;
+    textarea.selectionEnd = 6;
+    box.insertTag('[serious]');
+    assert.equal(textarea.value, '[serious]。');
   });
 });
 

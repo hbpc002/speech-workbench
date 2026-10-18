@@ -162,3 +162,47 @@ describe('markup ids', () => {
     );
   });
 });
+
+describe('shared surfaces', () => {
+  /** Ids the one AI `<dialog>` and the one prompt dialog own. */
+  const DIALOG_IDS = [
+    'tts-ai-run', 'tts-ai-close', 'tts-ai-cancel', 'tts-ai-apply', 'tts-ai-back',
+    'tag-help-close', 'tag-help-copy',
+  ];
+
+  it('lets only tag_dialog.js wire the shared dialogs', () => {
+    // Two tabs, one <dialog>. If both wired these buttons, every click would
+    // run the handler twice and race two different script boxes for the result.
+    // The module owns them and wires once, lazily.
+    const owner = 'tag_dialog.js';
+    const offenders = [];
+    for (const name of files) {
+      if (name === owner) continue;
+      const source = readFileSync(join(JS_DIR, name), 'utf8');
+      for (const id of DIALOG_IDS) {
+        if (source.includes(`'${id}'`)) offenders.push(`${name} -> #${id}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `${DIALOG_IDS.join(', ')} belong to ${owner}; the tabs open the dialog, they do not wire it:\n${offenders.join('\n')}`
+    );
+  });
+
+  it('routes every tag chip through script_box, so it stays undoable', () => {
+    // A bare insertAtCaret() writes the textarea without pushing onto the undo
+    // stack -- and that is exactly how chips stopped being undoable on one tab
+    // while still being undoable on the other.
+    const offenders = [];
+    for (const name of files.filter((f) => f.startsWith('tab_'))) {
+      const source = readFileSync(join(JS_DIR, name), 'utf8');
+      if (/\binsertAtCaret\s*\(/.test(source)) offenders.push(name);
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `${offenders.join(', ')} call insertAtCaret directly; use scriptBox.insertTag(tag) so the click lands on the undo stack and fires input`
+    );
+  });
+});

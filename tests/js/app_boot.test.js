@@ -252,9 +252,15 @@ describe('app.js module shape', () => {
   it('does not boot when there is no document', async () => {
     // The guard that makes this file testable at all.
     uninstallDom();
+    const calls = stubFetch({});
     counter += 1;
     const mod = await import(`${APP}?noDocument=${counter}`);
+    // boot() is async and not awaited on import, so give it a chance to.
+    await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(typeof mod.api, 'function');
-    assert.deepEqual(mod.state, { config: null, prompts: null });
+    // No document, no boot: not one request. The config left over from the cases
+    // above cannot be asserted here -- `state` moved to dom.js and is now the
+    // same object for every import.
+    assert.deepEqual(calls, []);
   });
 });
