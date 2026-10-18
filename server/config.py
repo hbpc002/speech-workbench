@@ -196,6 +196,14 @@ LLM_TIMEOUT_SECONDS = _env_int("LLM_TIMEOUT_SECONDS", default=120)
 LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", default=6000)
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", default=0.3)
 
+# 429（账号被限流）和 5xx 重试几次，退避按这个秒数翻倍。限流和上游抖动都是瞬时的，
+# 重试一次基本就过去了；4xx（key 错、模型不存在）不重试。
+#
+# 超时故意不重试：一次已经 120s，两次就是 360s，Vercel 函数 300s 就被回收，
+# 那样报错都发不回去。
+LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", default=2)
+LLM_RETRY_BACKOFF_SECONDS = _env_float("LLM_RETRY_BACKOFF_SECONDS", default=3.0)
+
 # 一次标注的输入上限。跟着最长时长一起放宽，否则长稿只能写、不能标。
 TAGS_MAX_CHARS = _env_int("TAGS_MAX_CHARS", default=4000)
 

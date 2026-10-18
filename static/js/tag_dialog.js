@@ -43,6 +43,12 @@ let dialogOrigin = null;
 /** The tab that opened it, as given to the last open*() call. */
 let target = null;
 
+/** How to send the request that just failed, for the 重试 button. */
+let retryAction = null;
+
+/** Pending slow-response hint, so it can be cancelled. */
+let slowTimer = null;
+
 let wired = false;
 
 /**
@@ -57,6 +63,7 @@ function wireDialog() {
   wired = true;
 
   el('tts-ai-run').addEventListener('click', () => requestScript());
+  el('tts-ai-retry').addEventListener('click', retry);
   el('tts-ai-close').addEventListener('click', closeDialog);
   el('tts-ai-cancel').addEventListener('click', closeDialog);
   el('tts-ai-apply').addEventListener('click', applyResult);
@@ -222,6 +229,8 @@ function closeDialog() {
   if (dialog.open) dialog.close();
   pendingResult = null;
   dialogOrigin = null;
+  retryAction = null;
+  clearSlowHint();
 }
 
 /** showModal() throws if the dialog is already up, which 返回 would otherwise hit. */
@@ -230,8 +239,21 @@ function showDialog() {
   if (!dialog.open) dialog.showModal();
 }
 
-/** Open the dialog on the loading screen, then fill it once `promise` settles. */
-async function withLoading(title, promise) {
+/**
+ * After this long, say so -- a long script can legitimately take a while, and a
+ * silent dialog with two dead buttons reads as a hang.
+ */
+const SLOW_AFTER_MS = 5000;
+
+/**
+ * Show the loading screen, run `request()`, then land on the result or the error.
+ *
+ * `request` is a function, not a promise, so the failure path can offer to send
+ * the exact same request again: closing the dialog and reopening it means
+ * retyping the topic, and that is the moment an operator gives up on a feature
+ * that would have worked on the second try.
+ */
+async function withLoading(title, request) {
   el('tts-ai-title').textContent = title;
   el('tts-ai-form').hidden = true;
   el('tts-ai-result').hidden = false;
@@ -240,15 +262,50 @@ async function withLoading(title, promise) {
   const error = el('tts-ai-error');
   error.hidden = true;
   el('tts-ai-summary').textContent = '模型正在处理…';
+  // Nothing to apply until there is a result, and nothing to retry yet either.
+  el('tts-ai-apply').hidden = true;
+  el('tts-ai-retry').hidden = true;
+  retryAction = null;
   showDialog();
+  startSlowHint();
 
   try {
-    showResult(await promise);
+    showResult(await request());
   } catch (err) {
     error.hidden = false;
     error.textContent = err.message || String(err);
     el('tts-ai-summary').textContent = '';
+    retryAction = request;
+    el('tts-ai-retry').hidden = false;
+  } finally {
+    clearSlowHint();
   }
+}
+
+/** Swap the spinner line for a reassurance once it has been going a while. */
+function startSlowHint() {
+  clearSlowHint();
+  slowTimer = setTimeout(() => {
+    const summary = el('tts-ai-summary');
+    // Only while the same screen is up; a result that arrived meanwhile clears it.
+    if (summary.textContent === '模型正在处理…') {
+      summary.textContent = '模型响应较慢，仍在等待…（被限流时服务端会自动重试两次）';
+    }
+  }, SLOW_AFTER_MS);
+}
+
+/** Drop a pending slow hint, so it cannot fire onto the next request's screen. */
+function clearSlowHint() {
+  if (slowTimer) {
+    clearTimeout(slowTimer);
+    slowTimer = null;
+  }
+}
+
+function retry() {
+  if (!retryAction) return;
+  const again = retryAction;
+  withLoading(el('tts-ai-title').textContent, again);
 }
 
 function showResult(payload) {
@@ -257,6 +314,10 @@ function showResult(payload) {
   // Named after the box the result is about to land in: 「文本框」 on the
   // synthesis tab, 「生成文本」 on the clone one.
   el('tts-ai-apply').textContent = `应用到${(target && target.label) || '文本框'}`;
+  el('tts-ai-apply').hidden = false;
+  // A result is in hand: there is nothing left to retry.
+  retryAction = null;
+  el('tts-ai-retry').hidden = true;
 
   const warnings = el('tts-ai-warnings');
   warnings.innerHTML = '';
@@ -280,15 +341,17 @@ function showResult(payload) {
 
 // ---- the three entries -----------------------------------------------------
 
-async function requestTags() {
+function requestTags() {
   const text = target.textarea.value.trim();
   if (!text) {
     target.report('请先输入文本');
     return;
   }
+  // Read once, here: 重试 re-sends this closure, and the operator may have typed
+  // in the meantime -- the request that was rejected was the one for this text.
   const options = tagOptions();
   dialogOrigin = 'tag';
-  await withLoading('AI 加情感标签', api('/api/tts/tag', {
+  return withLoading('AI 加情感标签', () => api('/api/tts/tag', {
     method: 'POST',
     body: JSON.stringify({ text, ...options }),
   }).then((body) => ({ ...body, before: text })));
@@ -302,17 +365,18 @@ function requestScript() {
     return;
   }
   const options = tagOptions();
+  const body = {
+    topic,
+    duration: scriptField('tts-ai-duration', 'tts-ai-duration-custom'),
+    tone: scriptField('tts-ai-tone', 'tts-ai-tone-custom'),
+    audience: scriptField('tts-ai-audience', 'tts-ai-audience-custom'),
+    ...options,
+  };
   dialogOrigin = 'script';
-  withLoading('AI 写口播稿', api('/api/tts/script', {
+  return withLoading('AI 写口播稿', () => api('/api/tts/script', {
     method: 'POST',
-    body: JSON.stringify({
-      topic,
-      duration: scriptField('tts-ai-duration', 'tts-ai-duration-custom'),
-      tone: scriptField('tts-ai-tone', 'tts-ai-tone-custom'),
-      audience: scriptField('tts-ai-audience', 'tts-ai-audience-custom'),
-      ...options,
-    }),
-  }).then((body) => ({ ...body, before: '' })));
+    body: JSON.stringify(body),
+  }).then((res) => ({ ...res, before: '' })));
 }
 
 /** The offline path: same preview, no network. */

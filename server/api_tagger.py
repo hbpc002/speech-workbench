@@ -50,6 +50,17 @@ def _start(request: Request) -> str:
     return key
 
 
+def _fail(exc: llm.LLMError) -> HTTPException:
+    """Turn an upstream failure into a response, Retry-After included.
+
+    A throttled account is the one failure where telling the browser how long to
+    wait is worth a header: the tag dialog uses it to explain itself, and the
+    local limiter above already answers with the same header.
+    """
+    headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+    return HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers)
+
+
 def _check_text(text: str) -> str:
     text = (text or "").strip()
     if not text:
@@ -97,7 +108,7 @@ async def tag_text(payload: TagRequest, request: Request) -> dict:
             tagger.tag_text, text, density, rich_level, model
         )
     except llm.LLMError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+        raise _fail(exc) from None
 
     return {"text": result.text, "inserted": result.inserted, "warnings": result.warnings}
 
@@ -123,6 +134,6 @@ async def write_script(payload: ScriptRequest, request: Request) -> dict:
             model,
         )
     except llm.LLMError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+        raise _fail(exc) from None
 
     return {"text": result.text, "inserted": result.inserted, "warnings": result.warnings}

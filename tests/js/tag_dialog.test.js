@@ -33,6 +33,7 @@ const DIALOG_IDS = [
   'tts-ai', 'tts-ai-title', 'tts-ai-form', 'tts-ai-result', 'tts-ai-summary',
   'tts-ai-warnings', 'tts-ai-compare', 'tts-ai-before', 'tts-ai-after',
   'tts-ai-error', 'tts-ai-apply', 'tts-ai-back', 'tts-ai-run', 'tts-ai-close',
+  'tts-ai-retry',
   'tts-ai-cancel', 'tts-ai-topic', 'tts-ai-topic-hints', 'tts-ai-duration',
   'tts-ai-tone', 'tts-ai-audience', 'tts-ai-duration-wrap', 'tts-ai-tone-wrap',
   'tts-ai-audience-wrap', 'tts-ai-duration-custom', 'tts-ai-tone-custom',
@@ -62,7 +63,7 @@ const CONFIG = {
  * opened it) and a `wired` flag, so each case needs its own copy -- hence the
  * cache-busting query rather than a plain import.
  */
-async function openDialog({ textarea = '', supportsTags = true, label = '文本框' } = {}) {
+async function openDialog({ textarea = '', supportsTags = true, label = '文本框', routes = {} } = {}) {
   const dom = installDom({ ids: [...DIALOG_IDS, ...TAG_ACTION_IDS, 'tts-text'] });
   dom.get('tts-text').value = textarea;
   counter += 1;
@@ -72,6 +73,7 @@ async function openDialog({ textarea = '', supportsTags = true, label = '文本�
   const calls = stubFetch({
     '/api/tts/tag': { body: { text: '[excited]太棒了。', inserted: 1, warnings: [] } },
     '/api/tts/script': { body: { text: '[whispers]悄悄说一句。', inserted: 1, warnings: ['口播稿偏短'] } },
+    ...routes,
   });
 
   // A stand-in for the tab's script box: records what was pushed and applied.
@@ -398,5 +400,105 @@ describe('tag dialog: button availability', () => {
     assert.equal(dom.get('tts-tag-fast').disabled, true);
     assert.equal(dom.get('tts-tag-note').textContent, '当前模型不支持情感标签');
     assert.deepEqual(stripCalls, [1], 'and 去标签 is re-checked every time');
+  });
+});
+
+describe('tag dialog: when the model refuses', () => {
+  // A throttled 百炼 account answers 429. The server now sends one actionable
+  // sentence and a Retry-After; what the dialog owes the operator is a way to
+  // send the same request again without retyping the brief.
+  const THROTTLED = {
+    status: 429,
+    body: { detail: '模型 qwen-turbo 触发请求频率限制（HTTP 429），等 30 秒左右再试；也可以把「标注模型」换成 qwen-plus，不想联网就用「快速标注」（本地规则）。' },
+  };
+
+  it('shows the reason and offers a retry, with nothing to apply', async () => {
+    const { dom, tagger } = await openDialog({
+      textarea: '太棒了！',
+      routes: { '/api/tts/tag': THROTTLED },
+    });
+    tagger.openTags();
+    await settle();
+
+    assert.equal(dom.get('tts-ai').open, true, 'the dialog stays open');
+    assert.equal(dom.get('tts-ai-error').hidden, false);
+    assert.match(dom.get('tts-ai-error').textContent, /频率限制/);
+    assert.equal(dom.get('tts-ai-retry').hidden, false);
+    // There is no result, so the apply button could only be a button that does
+    // nothing -- which is worse than no button at all.
+    assert.equal(dom.get('tts-ai-apply').hidden, true);
+    assert.equal(dom.get('tts-ai-summary').textContent, '');
+  });
+
+  it('resends the same request on 重试, and applies once it works', async () => {
+    let throttled = true;
+    const { dom, tagger, scriptBox, calls } = await openDialog({ textarea: '太棒了！' });
+    // The route changes under the dialog between the two attempts.
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, options });
+      if (url === '/api/tts/tag' && throttled) {
+        return { ok: false, status: 429, json: async () => THROTTLED.body };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ text: '[excited]太棒了。', inserted: 1, warnings: [] }),
+      };
+    };
+
+    tagger.openTags();
+    await settle();
+    assert.equal(dom.get('tts-ai-retry').hidden, false);
+
+    throttled = false;
+    click(dom, 'tts-ai-retry');
+    await settle();
+
+    assert.equal(dom.get('tts-ai-retry').hidden, true, 'no retry once there is a result');
+    assert.equal(dom.get('tts-ai-apply').hidden, false);
+    assert.equal(dom.get('tts-ai-error').hidden, true);
+
+    click(dom, 'tts-ai-apply');
+    assert.deepEqual(scriptBox.written, ['[excited]太棒了。']);
+    assert.equal(calls.filter((c) => c.url === '/api/tts/tag').length, 2);
+  });
+
+  it('keeps the brief so a retried 写口播稿 does not need retyping', async () => {
+    const { dom, tagger, calls } = await openDialog({ routes: { '/api/tts/script': THROTTLED } });
+    tagger.openScript();
+    dom.get('tts-ai-topic').value = '露营装备清单';
+    dom.get('tts-ai-duration').value = '30 秒';
+    click(dom, 'tts-ai-run');
+    await settle();
+    assert.equal(dom.get('tts-ai-retry').hidden, false);
+    assert.equal(dom.get('tts-ai-topic').value, '露营装备清单');
+
+    click(dom, 'tts-ai-retry');
+    await settle();
+    const scripts = calls.filter((c) => c.url === '/api/tts/script');
+    assert.equal(scripts.length, 2);
+    assert.deepEqual(JSON.parse(scripts[1].options.body), JSON.parse(scripts[0].options.body));
+  });
+
+  it('forgets the failed request when the dialog is closed', async () => {
+    const { dom, tagger, calls } = await openDialog({
+      textarea: '太棒了！',
+      routes: { '/api/tts/tag': THROTTLED },
+    });
+    tagger.openTags();
+    await settle();
+    click(dom, 'tts-ai-close');
+
+    click(dom, 'tts-ai-retry');
+    await settle();
+    assert.equal(calls.filter((c) => c.url === '/api/tts/tag').length, 1, 'no resend after closing');
+  });
+
+  it('never offers 重试 for the offline path', async () => {
+    // There is nothing to retry: the local rules cannot be throttled.
+    const { dom, tagger } = await openDialog({ textarea: '太棒了！' });
+    tagger.openFast();
+    assert.equal(dom.get('tts-ai-retry').hidden, true);
+    assert.equal(dom.get('tts-ai-apply').hidden, false);
   });
 });

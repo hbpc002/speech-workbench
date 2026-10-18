@@ -23,6 +23,12 @@ def deterministic_config(monkeypatch):
     )
     monkeypatch.setattr(config, "LLM_MODEL", "fast")
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 5)
+    # Retries stay on -- they are part of the behaviour -- but the wait between
+    # them does not: without this every failure case sleeps through the production
+    # backoff, and the suite goes from 2.5s to 12s. A case that cares about the
+    # backoff itself patches llm._backoff and asserts on what it was asked for.
+    monkeypatch.setattr(config, "LLM_RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(config, "LLM_MAX_RETRIES", 2)
     # Storage too: a developer's .env normally carries a real PUBLIC_BASE_URL
     # (often a tunnel) and sometimes a Blob token, both of which would silently
     # decide which backend the storage tests exercise.

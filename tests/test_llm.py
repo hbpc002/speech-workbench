@@ -120,7 +120,9 @@ class TestFailureMapping:
         assert excinfo.value.status_code == 502
 
     def test_upstream_error_body_never_reaches_the_browser(self, monkeypatch):
-        # Providers quote the failed request back, header included.
+        # Providers quote the failed request back, header included. A 401 no
+        # longer forwards any of it -- but the paths that do quote the provider's
+        # own sentence must still scrub it.
         key = config.LLM_API_KEY
         reply = FakeResponse(
             {"error": {"message": f"invalid header Authorization: Bearer {key}"}},
@@ -131,6 +133,22 @@ class TestFailureMapping:
             llm.chat([], "fast")
         assert excinfo.value.status_code == 502
         assert key not in excinfo.value.detail
+
+    def test_a_quoted_key_is_scrubbed_on_the_fallback_path(self, monkeypatch):
+        # An unmapped status hands the provider's sentence to the browser, so the
+        # credential patterns still have to run over it.
+        key = config.LLM_API_KEY
+        monkeypatch.setattr(
+            llm.requests,
+            "post",
+            lambda *a, **k: FakeResponse(
+                {"error": {"message": f"rejected Bearer {key} for this key"}}, status_code=418
+            ),
+        )
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert key not in excinfo.value.detail
+        assert "***" in excinfo.value.detail
 
     def test_unparseable_body_becomes_502(self, monkeypatch):
         monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse(None))
@@ -150,3 +168,163 @@ class TestFailureMapping:
         reply = completion("   ")
         monkeypatch.setattr(llm.requests, "post", lambda *a, **k: reply)
         assert llm.chat([], "fast") == "   "
+
+def throttle_body():
+    """The shape 百炼 answers a rate-limited account with."""
+    return {
+        "error": {
+            "message": "You have exceeded your current request limit. For details, "
+            "see: https://help.aliyun.com/zh/model-studio/error-code#rate-limit",
+            "type": "limit_requests",
+            "param": None,
+            "code": "throttling",
+        }
+    }
+
+
+def reply_with(monkeypatch, responses):
+    """Answer successive calls with `responses`; repeat the last one forever."""
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append({"url": url, "json": json, "headers": headers})
+        reply = responses[min(len(calls) - 1, len(responses) - 1)]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    return calls
+
+
+class TestUpstreamStatusMapping:
+    """Every upstream status the operator can actually do something about.
+
+    The browser used to receive `模型 X 调用失败（HTTP 429）: {"error": {...}}` --
+    the provider's JSON envelope, truncated mid-structure at a length nobody reads
+    past. These assert it now arrives as one actionable sentence.
+    """
+
+    def test_rate_limit_is_passed_through_with_a_retry_hint(self, monkeypatch):
+        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        # Retries are on by default, so let them all run out and inspect the last.
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+
+        error = excinfo.value
+        assert error.status_code == 429, "throttling is the one status worth passing through"
+        assert error.retry_after == llm.RETRY_AFTER_SECONDS
+        assert "频率限制" in error.detail
+        assert "fast" in error.detail
+        assert '{"error"' not in error.detail, "the JSON envelope must not reach the browser"
+
+    def test_rate_limit_names_the_alternative_models(self, monkeypatch):
+        # The fix is one click away: a different configured model, or no network.
+        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert "smart" in excinfo.value.detail
+        assert "快速标注" in excinfo.value.detail
+
+    def test_rate_limit_without_alternatives_still_offers_the_offline_path(self, monkeypatch):
+        monkeypatch.setattr(config, "LLM_MODELS", [{"id": "fast", "name": "快速"}])
+        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert "快速标注" in excinfo.value.detail
+
+    @pytest.mark.parametrize(
+        "status,expected",
+        [(401, "LLM_API_KEY"), (403, "权限"), (404, "LLM_MODELS"), (503, "暂时不可用")],
+    )
+    def test_other_failures_say_what_to_check(self, monkeypatch, status, expected):
+        reply_with(monkeypatch, [FakeResponse({"error": {"message": "nope"}}, status_code=status)])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert excinfo.value.status_code == 502, "only a throttle is 429"
+        assert excinfo.value.retry_after is None
+        assert expected in excinfo.value.detail
+
+    def test_odd_status_falls_back_to_the_providers_own_sentence(self, monkeypatch):
+        reply_with(
+            monkeypatch,
+            [FakeResponse({"error": {"message": "model is cooling down"}}, status_code=418)],
+        )
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert "model is cooling down" in excinfo.value.detail
+        assert '{"error"' not in excinfo.value.detail
+
+    def test_the_envelope_is_truncated_not_the_message(self, monkeypatch):
+        reply_with(
+            monkeypatch,
+            [FakeResponse({"error": {"message": "x" * 500}}, status_code=400)],
+        )
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        detail = excinfo.value.detail
+        assert len(detail) <= 200, "a dialog is not a log file"
+        assert detail.endswith("…")
+
+
+class TestRetry:
+    def test_a_throttle_is_retried_and_then_succeeds(self, monkeypatch):
+        calls = reply_with(
+            monkeypatch, [FakeResponse(throttle_body(), status_code=429), completion("recovered")]
+        )
+        assert llm.chat([], "fast") == "recovered"
+        assert len(calls) == 2, "one throttle then a success"
+
+    def test_retry_uses_the_configured_backoff(self, monkeypatch):
+        monkeypatch.setattr(config, "LLM_RETRY_BACKOFF_SECONDS", 2.0)
+        waits = []
+        monkeypatch.setattr(llm.time, "sleep", waits.append)
+        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429), completion()])
+        llm.chat([], "fast")
+        # Doubled, plus up to a second of jitter so two tabs do not march in step.
+        assert len(waits) == 1
+        assert 2.0 <= waits[0] <= 3.0
+
+    def test_upstream_outage_is_retried_too(self, monkeypatch):
+        calls = reply_with(monkeypatch, [FakeResponse(None, status_code=502), completion("ok")])
+        assert llm.chat([], "fast") == "ok"
+        assert len(calls) == 2
+
+    def test_the_gives_up_message_is_the_last_real_one(self, monkeypatch):
+        monkeypatch.setattr(config, "LLM_MAX_RETRIES", 1)
+        calls = reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert len(calls) == 2, "the first try plus one retry"
+        assert excinfo.value.status_code == 429
+        assert "频率限制" in excinfo.value.detail
+
+    def test_a_bad_request_is_not_retried(self, monkeypatch):
+        # Retrying a 401 burns quota that is already scarce, and cannot succeed.
+        calls = reply_with(monkeypatch, [FakeResponse(None, status_code=401)])
+        with pytest.raises(llm.LLMError):
+            llm.chat([], "fast")
+        assert len(calls) == 1
+
+    def test_a_timeout_is_not_retried(self, monkeypatch):
+        # 120s each, three in a row is 360s, and a Vercel function dies at 300s --
+        # the retry would turn a readable error into no response at all.
+        calls = reply_with(monkeypatch, [requests.Timeout()])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert len(calls) == 1
+        assert excinfo.value.status_code == 504
+
+    def test_a_connection_error_is_retried(self, monkeypatch):
+        calls = reply_with(
+            monkeypatch, [requests.ConnectionError("reset"), completion("ok")]
+        )
+        assert llm.chat([], "fast") == "ok"
+        assert len(calls) == 2
+
+    def test_retries_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(config, "LLM_MAX_RETRIES", 0)
+        calls = reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        with pytest.raises(llm.LLMError):
+            llm.chat([], "fast")
+        assert len(calls) == 1

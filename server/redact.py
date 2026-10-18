@@ -25,7 +25,7 @@ _PATTERNS = (
 MAX_LEN = 200
 
 
-def scrub(text: object) -> str:
+def scrub(text: object, limit: int = MAX_LEN) -> str:
     """Replace anything credential-shaped with a placeholder."""
     out = str(text)
     for pattern in _PATTERNS:
@@ -44,8 +44,10 @@ def scrub(text: object) -> str:
     ):
         if secret and len(secret) >= 8:
             out = out.replace(secret, "***")
-    if len(out) > MAX_LEN:
-        out = out[:MAX_LEN] + "…"
+    # `limit` is set by callers that put the text in front of a human, not into a
+    # log: a 200-char cut of a JSON error envelope is a truncated object.
+    if limit > 0 and len(out) > limit:
+        out = out[:limit] + "…"
     return out
 
 
