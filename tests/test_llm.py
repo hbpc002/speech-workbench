@@ -275,15 +275,36 @@ class TestRetry:
         assert llm.chat([], "fast") == "recovered"
         assert len(calls) == 2, "one throttle then a success"
 
-    def test_retry_uses_the_configured_backoff(self, monkeypatch):
+    def test_outage_retry_uses_the_configured_backoff(self, monkeypatch):
         monkeypatch.setattr(config, "LLM_RETRY_BACKOFF_SECONDS", 2.0)
         waits = []
         monkeypatch.setattr(llm.time, "sleep", waits.append)
-        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429), completion()])
+        reply_with(monkeypatch, [FakeResponse(None, status_code=503), completion()])
         llm.chat([], "fast")
         # Doubled, plus up to a second of jitter so two tabs do not march in step.
         assert len(waits) == 1
         assert 2.0 <= waits[0] <= 3.0
+
+    def test_a_throttle_waits_much_longer_than_an_outage(self, monkeypatch):
+        # 百炼 restores a throttled account within a minute and also throttles a
+        # sudden surge below the RPM ceiling, so re-asking after 3s deepens it.
+        monkeypatch.setattr(config, "LLM_RETRY_BACKOFF_SECONDS", 2.0)
+        monkeypatch.setattr(config, "LLM_RATE_LIMIT_BACKOFF_SECONDS", 20.0)
+        waits = []
+        monkeypatch.setattr(llm.time, "sleep", waits.append)
+        reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429), completion()])
+        llm.chat([], "fast")
+        assert len(waits) == 1
+        assert 20.0 <= waits[0] <= 22.0
+
+    def test_a_throttle_is_retried_once_and_no_more(self, monkeypatch):
+        # Three calls in ten seconds is exactly the surge the provider protects
+        # against; one patient retry is the whole policy.
+        calls = reply_with(monkeypatch, [FakeResponse(throttle_body(), status_code=429)])
+        with pytest.raises(llm.LLMError) as excinfo:
+            llm.chat([], "fast")
+        assert len(calls) == 2, "the first ask plus exactly one patient retry"
+        assert excinfo.value.status_code == 429
 
     def test_upstream_outage_is_retried_too(self, monkeypatch):
         calls = reply_with(monkeypatch, [FakeResponse(None, status_code=502), completion("ok")])

@@ -132,12 +132,10 @@ def chat(
         # the Authorization header -- so this body must never be forwarded raw.
         if not response.ok:
             error = _friendly_error(model, response)
-            if _worth_retrying(response) and attempt + 1 < attempts:
-                time.sleep(_backoff(attempt))
-                print(
-                    f"[llm] HTTP {response.status_code} from {model}, "
-                    f"retry {attempt + 1}/{attempts - 1} in {_backoff(attempt):.1f}s"
-                )
+            wait, again = _plan_retry(attempt, response)
+            if again:
+                time.sleep(wait)
+                print(f"[llm] HTTP {response.status_code} from {model}, retrying in {wait:.1f}s")
                 continue
             raise error from None
 
@@ -160,12 +158,32 @@ def _backoff(attempt: int) -> float:
     return base + random.uniform(0, min(1.0, base))
 
 
-def _worth_retrying(response: requests.Response) -> bool:
-    """Rate limits and upstream outages are transient; a bad request is not.
+def _plan_retry(attempt: int, response: requests.Response) -> tuple[float, bool]:
+    """How long to wait before asking again, and whether to ask at all.
 
-    Retrying a 401 or a 400 just burns the quota that is already scarce.
+    The two retryable failures need opposite treatment, which is why this is not
+    one rule:
+
+    * **429** -- the account's own budget for this minute is gone. 百炼 restores it
+      within a minute, and it also throttles a sudden *surge* even below the RPM
+      ceiling. So: exactly one retry, after a long wait. Hammering a throttled
+      account with three calls in ten seconds is what deepens the throttle.
+    * **5xx** -- the provider is unwell, not us. Retrying is free and often works
+      on the second ask.
+    * **4xx** other than 429 -- a bad key, a model that does not exist. Retrying
+      cannot succeed and burns quota that is already scarce.
     """
-    return response.status_code == 429 or 500 <= response.status_code < 600
+    if response.status_code == 429:
+        if attempt > 0 or config.LLM_MAX_RETRIES < 1:
+            return 0.0, False
+        wait = max(0.0, config.LLM_RATE_LIMIT_BACKOFF_SECONDS)
+        return wait + random.uniform(0, min(2.0, wait)), True
+
+    if not 500 <= response.status_code < 600:
+        return 0.0, False
+    if attempt + 1 > max(0, config.LLM_MAX_RETRIES):
+        return 0.0, False
+    return _backoff(attempt), True
 
 
 def _friendly_error(model: str, response: requests.Response) -> LLMError:

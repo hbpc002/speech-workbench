@@ -196,13 +196,17 @@ LLM_TIMEOUT_SECONDS = _env_int("LLM_TIMEOUT_SECONDS", default=120)
 LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", default=6000)
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", default=0.3)
 
-# 429（账号被限流）和 5xx 重试几次，退避按这个秒数翻倍。限流和上游抖动都是瞬时的，
-# 重试一次基本就过去了；4xx（key 错、模型不存在）不重试。
+# 429（账号被限流）和 5xx 重试几次，退避按这个秒数翻倍。
 #
-# 超时故意不重试：一次已经 120s，两次就是 360s，Vercel 函数 300s 就被回收，
+# 两者的等待时间必须分开：百炼的限流按主账号合并计算、通常一分钟内恢复，而且还有
+# 一条「请求量突增触发了稳定性保护，即使 RPM/TPM 未超限」。被限流后 3 秒再打一次
+# 只会加深限流，所以 429 只重试一次、且等这么久；5xx 是对方服务抖动，短退避重试。
+#
+# 超时故意不重试：一次已经 120s，两次就是 240s，再多就撞穿 Vercel 300s 的函数预算，
 # 那样报错都发不回去。
 LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", default=2)
 LLM_RETRY_BACKOFF_SECONDS = _env_float("LLM_RETRY_BACKOFF_SECONDS", default=3.0)
+LLM_RATE_LIMIT_BACKOFF_SECONDS = _env_float("LLM_RATE_LIMIT_BACKOFF_SECONDS", default=20.0)
 
 # 一次标注的输入上限。跟着最长时长一起放宽，否则长稿只能写、不能标。
 TAGS_MAX_CHARS = _env_int("TAGS_MAX_CHARS", default=4000)
@@ -264,7 +268,11 @@ TAGS_TOPIC_HINTS = [
     "周末景点推荐",
 ]
 
-TAGS_LIMIT_MAX_ATTEMPTS = _env_int("TAGS_LIMIT_MAX_ATTEMPTS", default=20)
+# 标注接口的本地限流。两个作用：防刷接口烧 token，以及——更要紧的——不让自己的
+# 上游额度被自己打爆。百炼对 qwen-turbo 的 RPM 限制按主账号合并计算，还要叠加一层
+# 「请求量突增触发的稳定性保护」，所以这个数字必须明显低于上游额度，而不是一个
+# 「随便点」的量。正常用一次标注要好几秒，一分钟里点 8 次已经是不像人话了。
+TAGS_LIMIT_MAX_ATTEMPTS = _env_int("TAGS_LIMIT_MAX_ATTEMPTS", default=8)
 TAGS_LIMIT_WINDOW_SECONDS = _env_int("TAGS_LIMIT_WINDOW_SECONDS", default=60)
 TAGS_LIMIT_LOCKOUT_SECONDS = _env_int("TAGS_LIMIT_LOCKOUT_SECONDS", default=120)
 
