@@ -69,8 +69,16 @@ _NO_BLOB_TOKEN = (
     "Vercel 控制台改完不 redeploy 等于没改。"
 )
 _NO_VERCEL_SDK = (
-    "选择了 blob 存储但没装 vercel 依赖，请执行 `pip install vercel`；"
+    "选择了 blob 存储但没装 vercel 依赖，请执行 `pip install -e .`"
+    "（或 `pip install 'vercel>=0.12'`）；"
     "或改用 STORAGE_BACKEND=local 并同时配置 PUBLIC_BASE_URL。"
+)
+# 0.11 的 AsyncBlobClient / BlobNoTokenProvidedError 在 0.12 里被删除，换成了
+# 模块级 put_blob / BlobCredentialsError。只 import 模块是发现不了的 —— 0.11
+# 也能 import 成功 —— 所以自检必须检查真正要用的入口。
+_INCOMPATIBLE_VERCEL_SDK = (
+    "选择了 blob 存储，但已安装的 vercel SDK 版本过旧（缺少 put_blob，需要 >=0.12）。"
+    "请执行 `pip install -U 'vercel>=0.12'` 或重新 `pip install -e .`。"
 )
 # store 的 access 是建的时候定的，建完不能改（CLI 只有 create-store，没有
 # update-access），所以只能重建。私有 store 的 URL 必须鉴权才能读，而阿里云
@@ -111,9 +119,11 @@ def _check_local() -> str | None:
 
 def _check_blob() -> str | None:
     try:
-        import vercel.blob  # noqa: F401 - 只验证装没装
+        import vercel.blob as blob
     except ImportError:
         return _NO_VERCEL_SDK
+    if not hasattr(blob, "put_blob"):
+        return _INCOMPATIBLE_VERCEL_SDK
     if not config.BLOB_TOKEN:
         return _NO_BLOB_TOKEN
     return None
@@ -143,25 +153,24 @@ def _put_local(wav_bytes: bytes, suffix: str) -> str:
 
 async def _put_blob(wav_bytes: bytes, suffix: str) -> str:
     try:
-        from vercel.blob import AsyncBlobClient, BlobError, BlobNoTokenProvidedError
+        import vercel.blob as blob
     except ImportError as exc:  # pragma: no cover - vercel 是主依赖，正常不会缺
         raise RuntimeError(_NO_VERCEL_SDK) from exc
 
+    if not hasattr(blob, "put_blob"):
+        raise RuntimeError(_INCOMPATIBLE_VERCEL_SDK)
+
     name = uuid.uuid4().hex + suffix
     # access 必须是 public：DashScope 是匿名回源下载这段音频的，不会带任何凭据。
-    # token 只在真的拿到了才显式传 —— SDK 的解析顺序是
-    # 「显式 token > 环境变量 BLOB_READ_WRITE_TOKEN」，传一个 token=None 进去
-    # 会连环境变量那条兜底路径一起短路掉。
-    kwargs = {"access": "public"}
-    if config.BLOB_TOKEN:
-        kwargs["token"] = config.BLOB_TOKEN
+    # 0.12 的 put_blob 只从环境变量解析凭据（显式 token 参数被移除了），而
+    # config._load_dotenv() 已经把 .env 写进 os.environ，所以和以前行为一致。
     try:
-        result = await AsyncBlobClient().put(name, wav_bytes, **kwargs)
-    except BlobNoTokenProvidedError as exc:
+        result = await blob.put_blob(name, wav_bytes, access="public")
+    except blob.BlobCredentialsError as exc:
         # store 建好了但没连到项目，最常见的一种，SDK 的英文原文只说配置变量，
         # 没说去哪儿配。换掉。
         raise RuntimeError(_NO_BLOB_TOKEN) from exc
-    except BlobError as exc:
+    except blob.BlobError as exc:
         if _is_private_store_error(exc):
             # 私有 store 读是要鉴权的，而阿里云只会匿名访问。降级成 private
             # 看似能传上去，但 create_voice 之后必然回源失败，报成

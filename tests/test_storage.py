@@ -84,29 +84,28 @@ class TestPutBlob:
         class BlobError(Exception):
             pass
 
-        class BlobNoTokenProvidedError(BlobError):
+        class BlobCredentialsError(BlobError):
             pass
 
         class FakeResult:
             url = "https://store.public.blob.vercel-storage.com/deadbeef.wav"
 
-        class FakeClient:
-            async def put(self, path, body, **kwargs):
-                recorder["path"] = path
-                recorder["body"] = body
-                recorder["kwargs"] = kwargs
-                return FakeResult()
+        async def put_blob(pathname, body, *, access, **kwargs):
+            recorder["path"] = pathname
+            recorder["body"] = body
+            recorder["kwargs"] = {"access": access, **kwargs}
+            return FakeResult()
 
         module.BlobError = BlobError
-        module.BlobNoTokenProvidedError = BlobNoTokenProvidedError
-        module.AsyncBlobClient = FakeClient
+        module.BlobCredentialsError = BlobCredentialsError
+        module.put_blob = put_blob
         monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
         monkeypatch.setitem(sys.modules, "vercel.blob", module)
         return module
 
     def test_uploads_as_a_public_blob(self, monkeypatch):
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         recorder = {}
         self._fake_sdk(monkeypatch, recorder)
 
@@ -117,22 +116,11 @@ class TestPutBlob:
         assert recorder["body"] == b"RIFFfake"
         assert recorder["path"].endswith(".wav")
 
-    def test_passes_the_configured_token(self, monkeypatch):
+    def test_does_not_pass_a_token_to_the_new_sdk(self, monkeypatch):
+        # 0.12 的 put_blob 没有 token 参数；它只从 BLOB_READ_WRITE_TOKEN /
+        # VERCEL_BLOB_READ_WRITE_TOKEN 解析凭据。传了反而会 TypeError。
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
-        recorder = {}
-        self._fake_sdk(monkeypatch, recorder)
-
-        run(storage.put(b"x", ".wav"))
-
-        assert recorder["kwargs"]["token"] == "vercel_blob_rw_token"
-
-    def test_omits_token_entirely_when_absent(self, monkeypatch):
-        # Passing token=None would beat the env fallback and defeat the
-        # BLOB_READ_WRITE_TOKEN Vercel injects.
-        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", None)
-        monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "from-env")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         recorder = {}
         self._fake_sdk(monkeypatch, recorder)
 
@@ -142,13 +130,13 @@ class TestPutBlob:
 
     def test_sdk_failure_becomes_a_readable_error(self, monkeypatch):
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         module = self._fake_sdk(monkeypatch, {})
 
-        async def boom(self, path, body, **kwargs):
+        async def boom(pathname, body, *, access, **kwargs):
             raise module.BlobError("store suspended")
 
-        module.AsyncBlobClient.put = boom
+        module.put_blob = boom
 
         with pytest.raises(RuntimeError) as excinfo:
             run(storage.put(b"x", ".wav"))
@@ -156,13 +144,13 @@ class TestPutBlob:
 
     def test_sdk_no_token_error_is_rewritten_in_chinese(self, monkeypatch):
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         module = self._fake_sdk(monkeypatch, {})
 
-        async def no_token(self, path, body, **kwargs):
-            raise module.BlobNoTokenProvidedError()
+        async def no_token(pathname, body, *, access, **kwargs):
+            raise module.BlobCredentialsError("Missing Blob credentials")
 
-        module.AsyncBlobClient.put = no_token
+        module.put_blob = no_token
 
         with pytest.raises(RuntimeError) as excinfo:
             run(storage.put(b"x", ".wav"))
@@ -174,16 +162,16 @@ class TestPutBlob:
         # read, and DashScope reads anonymously, so there is no code-side way
         # around it -- the store has to be recreated as Public.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         module = self._fake_sdk(monkeypatch, {})
 
-        async def private_store(self, path, body, **kwargs):
+        async def private_store(pathname, body, *, access, **kwargs):
             raise module.BlobError(
                 "Cannot use public access on a private store. "
                 "The store is configured with private access."
             )
 
-        module.AsyncBlobClient.put = private_store
+        module.put_blob = private_store
 
         with pytest.raises(RuntimeError) as excinfo:
             run(storage.put(b"x", ".wav"))
@@ -201,13 +189,13 @@ class TestPutBlob:
         # Only the private-store text is special-cased; everything else must
         # still surface the upstream detail.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         module = self._fake_sdk(monkeypatch, {})
 
-        async def suspended(self, path, body, **kwargs):
+        async def suspended(pathname, body, *, access, **kwargs):
             raise module.BlobError("store suspended")
 
-        module.AsyncBlobClient.put = suspended
+        module.put_blob = suspended
 
         with pytest.raises(RuntimeError) as excinfo:
             run(storage.put(b"x", ".wav"))
@@ -219,7 +207,7 @@ class TestPutBlob:
         # as an opaque InputDownloadFailed from DashScope, which reads like an
         # upstream outage. Failing loudly at upload is the better trade.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
-        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
         recorder = {}
         self._fake_sdk(monkeypatch, recorder)
 
@@ -227,6 +215,29 @@ class TestPutBlob:
 
         assert recorder["kwargs"]["access"] == "public"
         assert "private" not in recorder["kwargs"].values()
+
+    def test_old_sdk_version_is_reported_as_incompatible(self, monkeypatch):
+        # 0.11 has no module-level put_blob. Importing the module succeeds, so
+        # the check has to look at the actual entrypoint.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
+        module = types.ModuleType("vercel.blob")
+
+        class BlobError(Exception):
+            pass
+
+        class BlobCredentialsError(BlobError):
+            pass
+
+        module.BlobError = BlobError
+        module.BlobCredentialsError = BlobCredentialsError
+        monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
+        monkeypatch.setitem(sys.modules, "vercel.blob", module)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            run(storage.put(b"x", ".wav"))
+        assert ">=0.12" in str(excinfo.value)
+        assert "没装" not in str(excinfo.value)
 
     def test_missing_token_names_the_var_and_the_fix(self, monkeypatch):
         # The real SDK, so this also pins that credentials resolve offline.
@@ -328,6 +339,21 @@ class TestCheck:
         monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
         monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_token")
         assert storage.check() is None
+
+    def test_old_sdk_version_fails_the_setup_check(self, monkeypatch):
+        # Importing vercel.blob succeeds on 0.11, so the check must look for
+        # the entrypoint the upload path actually uses.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "blob")
+        monkeypatch.setattr(config, "BLOB_TOKEN", "vercel_blob_rw_store_secret")
+        monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
+        monkeypatch.setitem(
+            sys.modules, "vercel.blob", types.ModuleType("vercel.blob")
+        )
+
+        problem = storage.check()
+
+        assert ">=0.12" in problem
+        assert "没装" not in problem
 
     def test_message_never_echoes_the_token(self, monkeypatch):
         # It lands in logs and in the /healthz call chain.

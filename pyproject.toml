@@ -18,10 +18,11 @@ dependencies = [
     # 放 extra 的话一键部署出来的声音复刻 100% 报「vercel-blob is required」。
     #
     # 这是 Vercel 官方 SDK（pip install vercel），不是 PyPI 上那个同名的个人
-    # 封装 vercel-blob。0.11.6 的凭据链只有「显式 token → BLOB_READ_WRITE_TOKEN
-    # → VERCEL_BLOB_READ_WRITE_TOKEN」，没有 OIDC，所以在 Vercel 上仍然必须把
-    # Blob store 连到项目（Connect to Project）才会注入 token。
-    "vercel>=0.11.6",
+    # 封装 vercel-blob。0.12 把 0.11 的 AsyncBlobClient /
+    # BlobNoTokenProvidedError 换成了模块级 put_blob / BlobCredentialsError，
+    # server/storage.py 用的是后者，所以下限必须是 0.12。上限是防止下一个
+    # minor 再改 API 时，一次重新部署又静默把声音复刻弄坏。
+    "vercel>=0.12,<0.13",
 ]
 
 [project.optional-dependencies]
