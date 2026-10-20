@@ -22,7 +22,8 @@ import {
   VoiceClipRecorder,
   clearVoiceClones,
   clearVoicePreviews,
-  decodeToPcm16k,
+  decodeToPcm,
+  ENROLL_SAMPLE_RATE,
   deleteVoiceClone,
   deleteVoiceMeta,
   deleteVoicePreview,
@@ -44,7 +45,7 @@ import { CLONE_VOICE_KEY, applyRecent, loadRecent, localStore, rememberVoice, tr
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } from '/static/js/tag_dialog.js';
-import { MAX_SECONDS, SAMPLE_RATE, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
+import { MAX_SECONDS, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 
 const MAX_PREVIEWS = 30;
@@ -130,6 +131,8 @@ let voiceList = [];
 /** When the list on screen was obtained, and whether from this browser's cache. */
 let voiceListFetchedAt = 0;
 let voiceListFromCache = false;
+/** Non-empty when the server says cloning cannot work (storage/workspace/key). */
+let cloneBlockedReason = '';
 
 /** Display name: the operator's alias if they set one, else the id. */
 function labelFor(voiceId) {
@@ -203,13 +206,22 @@ function stampOf(ts) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function secondsOf(chunks) {
+function secondsOf(chunks, sampleRate = state.config.tts_sample_rate) {
   let total = 0;
   for (const chunk of chunks) total += chunk.length;
-  return total / SAMPLE_RATE;
+  return total / sampleRate;
 }
 
 // ---- enrollment clip -------------------------------------------------------
+
+/** The clone button needs both a usable clip and a server that can enroll. */
+function syncCloneButton() {
+  el('voice-clone').disabled = !clip || Boolean(cloneBlockedReason);
+}
+
+function cloneBlockedMessage() {
+  return cloneBlockedReason ? `声音复刻未就绪：${cloneBlockedReason}` : '';
+}
 
 /**
  * Re-encode the samples after analysis, optionally trimming, and publish the
@@ -219,15 +231,15 @@ function secondsOf(chunks) {
  */
 function publishClip(samples, label) {
   const result = el('voice-trim').checked
-    ? trimSilence(samples, SAMPLE_RATE, { maxSeconds: MAX_SECONDS })
+    ? trimSilence(samples, ENROLL_SAMPLE_RATE, { maxSeconds: MAX_SECONDS })
     : { samples, trimmed: false };
   const finalSamples = result.samples;
-  const stats = analyze(finalSamples, SAMPLE_RATE);
+  const stats = analyze(finalSamples, ENROLL_SAMPLE_RATE);
   const verdict = assess(stats);
 
   clipStats = { ...verdict, stats };
   // Array-wrapped: pcmToWavBlob takes a list of chunks.
-  clip = pcmToWavBlob([finalSamples], SAMPLE_RATE);
+  clip = pcmToWavBlob([finalSamples], ENROLL_SAMPLE_RATE);
 
   const panel = el('voice-clip-panel');
   panel.hidden = false;
@@ -239,7 +251,7 @@ function publishClip(samples, label) {
     `${stats.seconds.toFixed(1)} 秒`,
     `人声 ${Math.round(stats.voiceRatio * 100)}%`,
     `峰值 ${(stats.peak * 100).toFixed(0)}%`,
-    '16 kHz 单声道',
+    '24 kHz 单声道',
   ];
   if (result.trimmed) {
     chips.unshift(`已裁掉首尾静音 ${result.startSec.toFixed(1)}–${stats.seconds.toFixed(1)}s`);
@@ -264,7 +276,7 @@ function publishClip(samples, label) {
     el('voice-clip-issues').appendChild(item);
   }
 
-  el('voice-clone').disabled = false;
+  syncCloneButton();
   log('voice-status', `已就绪：${label}（${stats.seconds.toFixed(1)} 秒）`, 'system');
 }
 
@@ -281,17 +293,17 @@ function reapplyTrim() {
 async function acceptFile(file) {
   log('voice-status', '正在解码…', 'system');
   try {
-    const decoded = await decodeToPcm16k(file);
+    const decoded = await decodeToPcm(file, ENROLL_SAMPLE_RATE);
     currentSamples = decoded.samples;
     currentLabel = file.name;
     const note = decoded.wasResampled
-      ? `（原始 ${(decoded.sourceSampleRate / 1000).toFixed(1)}kHz ${decoded.sourceChannels === 1 ? '单声道' : '立体声'}，已转 16kHz 单声道）`
+      ? `（原始 ${(decoded.sourceSampleRate / 1000).toFixed(1)}kHz ${decoded.sourceChannels === 1 ? '单声道' : '立体声'}，已转 24kHz 单声道）`
       : '';
     publishClip(currentSamples, file.name + note);
   } catch (error) {
     clip = null;
     el('voice-clip-panel').hidden = true;
-    el('voice-clone').disabled = true;
+    syncCloneButton();
     log('voice-status', `无法解码 ${file.name}：${error.message}`, 'error');
   }
 }
@@ -689,8 +701,14 @@ async function clearAll() {
 
 // ---- cloning ---------------------------------------------------------------
 
+const CLONE_TIMEOUT_MS = 240000;
+
 async function clone() {
   if (!clip) return;
+  if (cloneBlockedReason) {
+    log('voice-status', cloneBlockedMessage(), 'error');
+    return;
+  }
   const prefix = el('voice-prefix').value.trim();
   const targetModel = el('voice-model').value;
   const startedAt = Date.now();
@@ -701,11 +719,17 @@ async function clone() {
   form.append('prefix', prefix);
   form.append('target_model', targetModel);
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLONE_TIMEOUT_MS);
   el('voice-clone').disabled = true;
   log('voice-status', '正在复刻，通常需要几秒…', 'system');
 
   try {
-    const { voice_id: voiceId } = await api('/api/voices', { method: 'POST', body: form });
+    const { voice_id: voiceId } = await api('/api/voices', {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
     log('voice-status', `复刻成功：${voiceId}`, 'system');
     await recordClone({ ...base, voiceId, ok: true, elapsed: Date.now() - startedAt });
     // Shown right away, as still under review, because that is what the operator
@@ -733,12 +757,16 @@ async function clone() {
     rememberVoice(localStore(), CLONE_VOICE_KEY, voiceId);
     noteModelSelection();
   } catch (error) {
-    log('voice-status', `复刻失败：${error.message}`, 'error');
+    const message = error.name === 'AbortError'
+      ? `复刻请求超过 ${CLONE_TIMEOUT_MS / 1000} 秒未返回，已取消。样本还在，可以直接重试。`
+      : error.message;
+    log('voice-status', `复刻失败：${message}`, 'error');
     // Failures are the half of this log that is actually useful: they are how
     // you notice you have been recording 2-second clips all afternoon.
-    await recordClone({ ...base, ok: false, error: error.message });
+    await recordClone({ ...base, ok: false, error: message });
   } finally {
-    el('voice-clone').disabled = !clip;
+    clearTimeout(timer);
+    syncCloneButton();
   }
 }
 
@@ -749,23 +777,56 @@ async function toggleRecording() {
     const active = recorder;
     recorder = null;
     button.textContent = '开始录音';
-    el('voice-level').style.width = '0';
     currentSamples = active.samples();
     currentLabel = `录音 ${active.seconds.toFixed(1)}s`;
-    publishClip(currentSamples, currentLabel);
+    try {
+      // This is what actually stops the capture: clears the level timer,
+      // disconnects the worklet, stops the mic tracks and closes the context.
+      // Dropping the reference alone left the meter running and the mic open.
+      await active.stop();
+    } finally {
+      el('voice-level').style.width = '0';
+      publishClip(currentSamples, currentLabel);
+    }
     return;
   }
 
   try {
-    recorder = new VoiceClipRecorder(TARGET_SECONDS, (level) => {
+    const instance = new VoiceClipRecorder(TARGET_SECONDS, (level) => {
+      // A tick already queued when stop() was clicked must not paint the bar.
+      if (recorder !== instance) return;
       el('voice-level').style.width = `${Math.min(100, level * 320)}%`;
     });
-    await recorder.start();
+    recorder = instance;
+    await instance.start();
     button.textContent = '停止录音';
     log('voice-status', '录音中…', 'system');
   } catch (error) {
+    const failed = recorder;
     recorder = null;
+    if (failed) await failed.stop().catch(() => {});
     log('voice-status', `无法访问麦克风：${error.message}`, 'error');
+  }
+}
+
+/**
+ * Ask the server whether cloning can work at all.
+ *
+ * Missing PUBLIC_BASE_URL / a private Blob store / a missing workspace id all
+ * fail the same way only after the user has recorded a clip. Surfacing the
+ * reason up front makes the disabled button explain itself instead.
+ */
+async function checkCloneReadiness() {
+  try {
+    const info = await api('/api/voices/readiness');
+    if (!info?.ready) {
+      cloneBlockedReason = info?.reason || '服务端未就绪';
+      log('voice-status', cloneBlockedMessage(), 'error');
+      syncCloneButton();
+    }
+  } catch (_) {
+    // An older server without the endpoint, or a transient failure: keep the
+    // button available rather than blocking cloning on a diagnostic call.
   }
 }
 
@@ -1258,6 +1319,7 @@ export function init() {
 
   renderHistory();
   renderCloneLog();
+  checkCloneReadiness();
 }
 
 /**

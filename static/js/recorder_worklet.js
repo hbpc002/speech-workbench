@@ -13,7 +13,10 @@ class PCMProcessor extends AudioWorkletProcessor {
             }
         };
         this.buffer = [];  // 初始化缓冲区来存储采样点
-        this.targetSampleCount = 1600;  // 目标样本数量100ms
+        // The worklet runs at the AudioContext's rate, which is 16 kHz for ASR
+        // but 24 kHz for enrollment. Derive 100 ms instead of hardcoding the
+        // 1600 samples that 16 kHz happened to need.
+        this.targetSampleCount = Math.max(1, Math.round(sampleRate * 0.1));
     }
 
     process(inputs, outputs, parameters) {

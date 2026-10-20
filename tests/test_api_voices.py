@@ -8,6 +8,7 @@ already applied on the sibling list endpoint in the same file.
 """
 
 import io
+import wave
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,9 +30,22 @@ def no_auth(monkeypatch):
     monkeypatch.setattr(config, "SESSION_SECRET", "")
 
 
+def make_wav(seconds=6.0, rate=24000, channels=1, bits=16, frames=None):
+    """A valid PCM WAV, so validation exercises the same shape the UI sends."""
+    if frames is None:
+        frames = int(seconds * rate)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(bits // 8)
+        handle.setframerate(rate)
+        handle.writeframes(b"\0" * frames * channels * (bits // 8))
+    return out.getvalue()
+
+
 @pytest.fixture
 def wav_upload():
-    return {"audio": ("sample.wav", io.BytesIO(b"RIFF" + b"\0" * 64), "audio/wav")}
+    return {"audio": ("sample.wav", io.BytesIO(make_wav()), "audio/wav")}
 
 
 @pytest.fixture
@@ -68,7 +82,7 @@ class TestValidation:
         assert response.status_code == 400
 
     def test_local_backend_refuses_mp3(self, client, no_auth, monkeypatch):
-        # DashScope wants wav at 16kHz; an mp3 upstream reports a download error.
+        # DashScope wants a WAV; an mp3 upstream reports a download error.
         monkeypatch.setattr(config, "STORAGE_BACKEND", "local")
         response = client.post(
             "/api/voices", files={"audio": ("sample.mp3", io.BytesIO(b"ID3"), "audio/mpeg")}
@@ -80,6 +94,162 @@ class TestValidation:
         monkeypatch.setattr(config, "APP_PASSWORD", "hunter2")
         monkeypatch.setattr(config, "SESSION_SECRET", "hunter2")
         assert client.post("/api/voices", files=wav_upload).status_code == 401
+
+
+class TestAudioValidation:
+    def test_qwen_rejects_a_16khz_sample(self, client, no_auth):
+        # The old pipeline recorded everything at 16 kHz. Qwen-Audio-TTS
+        # rejects that with an upstream error that reads like an outage.
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(rate=16000)), "audio/wav")}
+        response = client.post(
+            "/api/voices",
+            data={"target_model": "qwen-audio-3.0-tts-flash"},
+            files=files,
+        )
+        assert response.status_code == 400
+        assert "24000" in response.json()["detail"]
+
+    def test_qwen_accepts_24khz(self, client, no_auth, monkeypatch, stored_locally):
+        monkeypatch.setattr(
+            api_voices, "_create_voice", lambda *args, **kwargs: ("voice-1", "req-1")
+        )
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(rate=24000)), "audio/wav")}
+        response = client.post(
+            "/api/voices",
+            data={"target_model": "qwen-audio-3.0-tts-flash"},
+            files=files,
+        )
+        assert response.status_code == 200
+        assert response.json()["voice_id"] == "voice-1"
+
+    def test_cosyvoice_still_accepts_16khz(self, client, no_auth, monkeypatch, stored_locally):
+        monkeypatch.setattr(
+            api_voices, "_create_voice", lambda *args, **kwargs: ("voice-2", "req-2")
+        )
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(rate=16000)), "audio/wav")}
+        response = client.post(
+            "/api/voices",
+            data={"target_model": "cosyvoice-v3-flash"},
+            files=files,
+        )
+        assert response.status_code == 200
+
+    def test_rejects_a_too_short_sample(self, client, no_auth):
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(seconds=3)), "audio/wav")}
+        response = client.post("/api/voices", files=files)
+        assert response.status_code == 400
+        assert "5" in response.json()["detail"]
+
+    def test_rejects_a_sample_over_60_seconds(self, client, no_auth):
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(seconds=61)), "audio/wav")}
+        response = client.post("/api/voices", files=files)
+        assert response.status_code == 400
+        assert "60" in response.json()["detail"]
+
+    def test_rejects_an_oversized_upload(self):
+        with pytest.raises(api_voices.HTTPException) as excinfo:
+            api_voices._validate_enroll_audio(
+                b"x" * (api_voices.ENROLL_MAX_BYTES + 1), "cosyvoice-v3-flash"
+            )
+        assert excinfo.value.status_code == 400
+        assert "10" in excinfo.value.detail
+
+
+class TestRetryPolicy:
+    class FakeService:
+        def __init__(self, errors):
+            self.errors = list(errors)
+            self.calls = 0
+
+        def create_voice(self, **kwargs):
+            self.calls += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            return "voice-ok"
+
+        def get_last_request_id(self):
+            return "req-ok"
+
+    def test_retries_a_download_failure(self, monkeypatch):
+        service = self.FakeService(
+            [RuntimeError("BadRequest.InputDownloadFailed: could not fetch clip")]
+        )
+        waits = []
+        monkeypatch.setattr(api_voices, "_service", lambda: service)
+        monkeypatch.setattr(api_voices.time, "sleep", waits.append)
+
+        voice_id, request_id = api_voices._create_voice(
+            "https://app.example/media/x.wav", "demo", "cosyvoice-v3-flash"
+        )
+
+        assert (voice_id, request_id) == ("voice-ok", "req-ok")
+        assert service.calls == 2
+        assert waits, "the retry should back off instead of hammering upstream"
+
+    def test_does_not_retry_a_permanent_parameter_error(self, monkeypatch):
+        service = self.FakeService(
+            [RuntimeError("InvalidParameter: target_model does not exist")]
+        )
+        waits = []
+        monkeypatch.setattr(api_voices, "_service", lambda: service)
+        monkeypatch.setattr(api_voices.time, "sleep", waits.append)
+
+        with pytest.raises(RuntimeError, match="InvalidParameter"):
+            api_voices._create_voice(
+                "https://app.example/media/x.wav", "demo", "cosyvoice-v3-flash"
+            )
+
+        assert service.calls == 1
+        assert waits == []
+
+    def test_is_retryable_recognises_both_sides(self):
+        assert api_voices._is_retryable(RuntimeError("BadRequest.InputDownloadFailed"))
+        assert api_voices._is_retryable(RuntimeError("Connection reset by peer"))
+        assert api_voices._is_retryable(RuntimeError("Throttling: 429"))
+        assert not api_voices._is_retryable(RuntimeError("InvalidParameter: prefix"))
+        assert not api_voices._is_retryable(RuntimeError("ModelNotFound"))
+        assert not api_voices._is_retryable(RuntimeError("QuotaExceeded"))
+
+    def test_reports_the_upstream_reason_in_chinese(self):
+        message = api_voices._friendly_enroll_error(
+            RuntimeError("File sample rate unsupported"), "qwen-audio-3.0-tts-flash"
+        )
+        assert message.startswith("音色复刻失败")
+        assert "24 kHz" in message
+
+    def test_enroll_status_separates_throttling_and_bad_input(self):
+        assert api_voices._enroll_status(RuntimeError("Throttling: 429")) == 429
+        assert api_voices._enroll_status(RuntimeError("InvalidParameter")) == 400
+        assert api_voices._enroll_status(RuntimeError("socket timeout")) == 502
+
+
+class TestReadiness:
+    def test_reports_not_ready_without_a_workspace(self, client, no_auth, monkeypatch):
+        monkeypatch.setattr(config, "API_KEY", "sk-test")
+        monkeypatch.setattr(config, "WORKSPACE_ID", "")
+        monkeypatch.setattr(storage, "check", lambda: None)
+
+        body = client.get("/api/voices/readiness").json()
+
+        assert body["ready"] is False
+        assert "DASHSCOPE_WORKSPACE_ID" in body["reason"]
+
+    def test_reports_storage_problems(self, client, no_auth, monkeypatch):
+        monkeypatch.setattr(config, "API_KEY", "sk-test")
+        monkeypatch.setattr(config, "WORKSPACE_ID", "llm-abc")
+        monkeypatch.setattr(storage, "check", lambda: "PUBLIC_BASE_URL 缺失")
+
+        body = client.get("/api/voices/readiness").json()
+
+        assert body["ready"] is False
+        assert body["reason"] == "PUBLIC_BASE_URL 缺失"
+
+    def test_reports_ready_when_everything_is_configured(self, client, no_auth, monkeypatch):
+        monkeypatch.setattr(config, "API_KEY", "sk-test")
+        monkeypatch.setattr(config, "WORKSPACE_ID", "llm-abc")
+        monkeypatch.setattr(storage, "check", lambda: None)
+
+        assert client.get("/api/voices/readiness").json()["ready"] is True
 
 
 class TestErrorScrubbing:

@@ -39,6 +39,15 @@ function silence(samples, seconds, sampleRate = SAMPLE_RATE) {
   return new Int16Array(Math.round(seconds * sampleRate));
 }
 
+describe('sample rate', () => {
+  it('mirrors the 24 kHz enrollment pipeline', () => {
+    // qwen-audio-3.0-tts rejects anything below 24 kHz. Keeping this aligned
+    // with audio.js's ENROLL_SAMPLE_RATE is what prevents the old 16 kHz clip
+    // from reaching the server.
+    assert.equal(SAMPLE_RATE, 24000);
+  });
+});
+
 function join(...parts) {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Int16Array(total);

@@ -7,6 +7,11 @@
 
 export const INPUT_SAMPLE_RATE = 16000;
 
+// Voice enrollment is not ASR: qwen-audio-3.0-tts requires >= 24 kHz samples,
+// while CosyVoice accepts >= 16 kHz. Recording everything at 24 kHz keeps one
+// pipeline valid for every clone model instead of failing only on qwen.
+export const ENROLL_SAMPLE_RATE = 24000;
+
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -157,10 +162,11 @@ export class PcmPlayer {
   }
 }
 
-/** Records the browser microphone into a 16 kHz mono WAV blob for cloning. */
+/** Records the browser microphone into a mono WAV blob for cloning. */
 export class VoiceClipRecorder {
-  constructor(targetSeconds = 10, onLevel = () => {}) {
-    this.targetSamples = targetSeconds * INPUT_SAMPLE_RATE;
+  constructor(targetSeconds = 10, onLevel = () => {}, sampleRate = ENROLL_SAMPLE_RATE) {
+    this.sampleRate = sampleRate;
+    this.targetSamples = targetSeconds * sampleRate;
     this.collected = [];
     this.collectedSamples = 0;
     this.onLevel = onLevel;
@@ -170,23 +176,25 @@ export class VoiceClipRecorder {
     this.stream = null;
     this.analyser = null;
     this.levelTimer = null;
+    this.stopped = false;
   }
 
   async start() {
     this.collected = [];
     this.collectedSamples = 0;
+    this.stopped = false;
     this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: INPUT_SAMPLE_RATE, channelCount: 1, echoCancellation: true },
+      audio: { sampleRate: this.sampleRate, channelCount: 1, echoCancellation: true },
     });
     this.context = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: INPUT_SAMPLE_RATE,
+      sampleRate: this.sampleRate,
     });
     await this.context.audioWorklet.addModule('/static/js/recorder_worklet.js');
 
     this.source = this.context.createMediaStreamSource(this.stream);
     this.node = new AudioWorkletNode(this.context, 'pcm-processor');
     this.node.port.onmessage = (event) => {
-      if (!(event.data instanceof Int16Array)) return;
+      if (this.stopped || !(event.data instanceof Int16Array)) return;
       const remaining = this.targetSamples - this.collectedSamples;
       if (remaining <= 0) return;
       const take = remaining >= event.data.length ? event.data : event.data.slice(0, remaining);
@@ -204,6 +212,9 @@ export class VoiceClipRecorder {
     this.source.connect(this.analyser);
     const samples = new Float32Array(this.analyser.fftSize);
     this.levelTimer = setInterval(() => {
+      // stop() clears the interval, but a callback already queued as a task can
+      // still run afterwards. The flag keeps it from repainting the level bar.
+      if (this.stopped || !this.analyser) return;
       this.analyser.getFloatTimeDomainData(samples);
       let sum = 0;
       for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
@@ -212,7 +223,7 @@ export class VoiceClipRecorder {
   }
 
   get seconds() {
-    return this.collectedSamples / INPUT_SAMPLE_RATE;
+    return this.collectedSamples / this.sampleRate;
   }
 
   get isFull() {
@@ -229,7 +240,15 @@ export class VoiceClipRecorder {
   }
 
   async stop() {
-    if (this.levelTimer) clearInterval(this.levelTimer);
+    this.stopped = true;
+    if (this.levelTimer) {
+      clearInterval(this.levelTimer);
+      this.levelTimer = null;
+    }
+    if (this.analyser) {
+      this.analyser.disconnect();
+      this.analyser = null;
+    }
     if (this.node) {
       this.node.disconnect();
       this.node = null;
@@ -272,8 +291,8 @@ export class VoiceClipRecorder {
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true); // PCM
     view.setUint16(22, 1, true); // mono
-    view.setUint32(24, INPUT_SAMPLE_RATE, true);
-    view.setUint32(28, INPUT_SAMPLE_RATE * 2, true);
+    view.setUint32(24, this.sampleRate, true);
+    view.setUint32(28, this.sampleRate * 2, true);
     view.setUint16(32, 2, true);
     view.setUint16(34, 16, true);
     writeText(36, 'data');
@@ -453,8 +472,9 @@ export function saveBlob(blob, filename) {
 }
 
 /**
- * Decodes any audio file the browser understands and renders it as 16 kHz mono
- * PCM, which is what DashScope's enrollment endpoint wants.
+ * Decodes any audio file the browser understands and renders it as mono PCM at
+ * the enrollment sample rate (24 kHz by default: the minimum qwen-audio TTS
+ * accepts, and comfortably above CosyVoice's 16 kHz floor).
  *
  * Two reasons this exists rather than posting the file as-is:
  *   - the old code hardcoded a `.wav` filename on whatever the user picked, so
@@ -466,7 +486,7 @@ export function saveBlob(blob, filename) {
  * OfflineAudioContext does the resampling, so there is no hand-rolled filter to
  * get wrong.
  */
-export async function decodeToPcm16k(blob) {
+export async function decodeToPcm(blob, sampleRate = ENROLL_SAMPLE_RATE) {
   const source = await blob.arrayBuffer();
   const context = new (window.AudioContext || window.webkitAudioContext)();
   let decoded;
@@ -478,12 +498,12 @@ export async function decodeToPcm16k(blob) {
 
   const sourceSampleRate = decoded.sampleRate;
   const sourceChannels = decoded.numberOfChannels;
-  const needsResample = sourceSampleRate !== INPUT_SAMPLE_RATE || sourceChannels !== 1;
+  const needsResample = sourceSampleRate !== sampleRate || sourceChannels !== 1;
 
   let rendered = decoded;
   if (needsResample) {
-    const frames = Math.max(1, Math.ceil((decoded.duration * INPUT_SAMPLE_RATE)));
-    const offline = new OfflineAudioContext(1, frames, INPUT_SAMPLE_RATE);
+    const frames = Math.max(1, Math.ceil((decoded.duration * sampleRate)));
+    const offline = new OfflineAudioContext(1, frames, sampleRate);
     const sourceNode = offline.createBufferSource();
     sourceNode.buffer = decoded;
     sourceNode.connect(offline.destination);

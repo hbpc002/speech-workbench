@@ -15,9 +15,11 @@
 // block: refusing to clone someone's voice because the RMS was 1 dB low would
 // be worse than cloning it.
 
-/** What DashScope is documented to want, mirrored from server/config.py. */
+/** What DashScope is documented to want. */
 export const TARGET_SECONDS = 10;
-export const SAMPLE_RATE = 16000;
+// qwen-audio-3.0-tts rejects samples below 24 kHz; CosyVoice accepts >= 16 kHz.
+// One 24 kHz pipeline is valid for every clone model.
+export const SAMPLE_RATE = 24000;
 
 // Exported because the UI quotes these numbers back to the user, so the
 // thresholds the copy refers to and the ones enforced are the same values.

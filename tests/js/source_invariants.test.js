@@ -206,3 +206,34 @@ describe('shared surfaces', () => {
     );
   });
 });
+
+describe('voice enrollment', () => {
+  it('actually stops the recorder instead of dropping the reference', () => {
+    // Regression: the stop branch set `recorder = null` and reset the meter,
+    // but never called stop(). The interval kept repainting the bar and the
+    // microphone stayed open.
+    const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
+    assert.match(source, /await active\.stop\(\)/);
+    assert.match(source, /if \(recorder !== instance\) return;/);
+  });
+
+  it('records at 24 kHz, because qwen-audio rejects 16 kHz samples', () => {
+    const audio = readFileSync(join(JS_DIR, 'audio.js'), 'utf8');
+    assert.match(audio, /export const ENROLL_SAMPLE_RATE = 24000;/);
+
+    const clipCheck = readFileSync(join(JS_DIR, 'clip_check.js'), 'utf8');
+    assert.match(clipCheck, /export const SAMPLE_RATE = 24000;/);
+  });
+
+  it('derives the worklet chunk size from the context sample rate', () => {
+    const worklet = readFileSync(join(JS_DIR, 'recorder_worklet.js'), 'utf8');
+    assert.match(worklet, /Math\.round\(sampleRate \* 0\.1\)/);
+    assert.doesNotMatch(worklet, /targetSampleCount = 1600/);
+  });
+
+  it('bounds the clone request so the button cannot hang forever', () => {
+    const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
+    assert.match(source, /new AbortController\(\)/);
+    assert.match(source, /signal: controller\.signal/);
+  });
+});
