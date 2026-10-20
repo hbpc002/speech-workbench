@@ -24,6 +24,10 @@
       <h1>语音工坊</h1>
       <div class="topbar-right">
         <span class="badge" id="platform-badge"></span>
+        <button class="ghost debug-toggle" id="debug-toggle" type="button"
+                aria-controls="debug-console" aria-expanded="false">
+          日志 <span class="debug-badge" id="debug-count" hidden>0</span>
+        </button>
         <button class="ghost" id="logout">退出</button>
       </div>
     </header>
@@ -251,6 +255,10 @@
         <button class="ghost" id="voice-refresh">刷新列表</button>
         <button class="ghost danger" id="voice-clear">清理全部</button>
       </div>
+      <div class="clone-progress" id="voice-clone-progress" hidden aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="voice-clone-progress-text">正在复刻…</span>
+      </div>
 
       <div class="clip-check" id="voice-clip-panel" hidden>
         <div class="clip-check-head">
@@ -346,6 +354,20 @@
       <div id="voice-clone-log" class="history"></div>
     </section>
   </main>
+
+  <section class="debug-console" id="debug-console" hidden aria-label="调试日志">
+    <div class="debug-head">
+      <strong>调试日志</strong>
+      <span class="muted" id="debug-summary">仅当前页面</span>
+      <label class="inline"><input type="checkbox" id="debug-errors-only"> 只看错误</label>
+      <span class="debug-actions">
+        <button type="button" class="ghost" id="debug-copy">复制</button>
+        <button type="button" class="ghost" id="debug-clear">清空</button>
+        <button type="button" class="ghost" id="debug-close">关闭</button>
+      </span>
+    </div>
+    <div class="debug-lines" id="debug-lines" role="log" aria-live="polite"></div>
+  </section>
 </div>
 
 <script type="module" src="/static/js/app.js"></script>

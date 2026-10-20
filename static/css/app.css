@@ -86,6 +86,93 @@ h2 { font-size: 15px; }
 
 .topbar-right { display: flex; align-items: center; gap: 10px; }
 
+.debug-toggle.has-error { border-color: var(--err); color: var(--err); }
+
+.debug-badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  margin-left: 3px;
+  border-radius: 999px;
+  background: var(--err);
+  color: #1a0b0d;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* The log is a drawer rather than a modal: the operator can act on the page
+   while it is open, which is the point of showing request ids next to errors. */
+.debug-console {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  max-height: 48vh;
+  background: #0b0e14;
+  border-top: 1px solid var(--border-hi);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.42);
+}
+
+.debug-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.debug-head strong { font-size: 13px; }
+.debug-head .muted { font-size: 12px; }
+.debug-actions { display: flex; gap: 6px; margin-left: auto; }
+
+.debug-lines {
+  min-height: 120px;
+  overflow: auto;
+  padding: 8px 14px calc(14px + env(safe-area-inset-bottom));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.debug-entry { padding: 7px 0; border-bottom: 1px solid rgba(42, 47, 61, 0.55); }
+.debug-entry:last-child { border-bottom: 0; }
+
+.debug-line { display: flex; gap: 8px; align-items: baseline; }
+.debug-time { color: var(--muted); white-space: nowrap; }
+.debug-level { font-weight: 600; color: var(--muted); white-space: nowrap; }
+.debug-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.debug-detail {
+  margin: 3px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.debug-cmd .debug-level,
+.debug-cmd .debug-message { color: var(--accent); }
+.debug-ok .debug-level,
+.debug-ok .debug-message { color: var(--ok); }
+.debug-warn .debug-level,
+.debug-warn .debug-message { color: var(--warn); }
+.debug-error .debug-level,
+.debug-error .debug-message { color: var(--err); }
+.debug-empty { color: var(--muted); padding: 10px 0; }
+
+@media (max-width: 640px) {
+  .debug-head { gap: 6px 10px; }
+  .debug-actions { margin-left: 0; }
+  .debug-console { max-height: 58vh; }
+  .debug-lines { font-size: 11px; }
+}
+
 .badge {
   font-size: 11px;
   padding: 2px 8px;
@@ -764,6 +851,33 @@ p.hint {
 .clip-issues .sev-warn { color: var(--warn); }
 
 /* ---- voice management (tab 4) -------------------------------------------- */
+
+.clone-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid var(--border-hi);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: debug-spin 0.8s linear infinite;
+}
+
+@keyframes debug-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--accent); }
+}
 
 /* Shown next to an alias, so the real id is always recoverable. */
 .voice-real-id {

@@ -236,4 +236,51 @@ describe('voice enrollment', () => {
     assert.match(source, /new AbortController\(\)/);
     assert.match(source, /signal: controller\.signal/);
   });
+
+  it('shows elapsed-time progress while the clone is in flight', () => {
+    const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
+    assert.match(source, /setCloneProgress\(true\)/);
+    assert.match(source, /setCloneProgress\(false\)/);
+    assert.match(source, /voice-clone-progress-text/);
+    assert.match(source, /aria-busy/);
+  });
+
+  it('forces a fresh list after cloning and keeps a just-created voice', () => {
+    // The list fetched at page load predates the new voice, and the server's
+    // 60 s cache would otherwise answer the follow-up refresh with it missing.
+    const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
+    assert.match(source, /voiceListRequestSeq/);
+    assert.match(source, /refreshVoices\(\{ force: true, ensureVoice: entry \}\)/);
+    assert.match(source, /requestSeq !== voiceListRequestSeq/);
+  });
+});
+
+describe('diagnostics', () => {
+  const html = readFileSync(join(JS_DIR, '..', 'index.html'), 'utf8');
+
+  it('ships the log drawer and clone progress markup', () => {
+    for (const id of [
+      'debug-toggle',
+      'debug-console',
+      'debug-lines',
+      'debug-copy',
+      'debug-clear',
+      'voice-clone-progress',
+      'voice-clone-progress-text',
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
+    }
+  });
+
+  it('wires the console once the app starts', () => {
+    const source = readFileSync(join(JS_DIR, 'app.js'), 'utf8');
+    assert.match(source, /initDebugConsole\(\);/);
+    assert.match(source, /String\(container\)\.endsWith\('-status'\)/);
+  });
+
+  it('logs the HTTP command and status from the shared helper', () => {
+    const source = readFileSync(join(JS_DIR, 'http.js'), 'utf8');
+    assert.match(source, /command\(`\$\{method\} \$\{path\}`\)/);
+    assert.match(source, /err\.debug = payload\.debug/);
+  });
 });

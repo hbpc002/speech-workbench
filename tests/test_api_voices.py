@@ -122,6 +122,20 @@ class TestAudioValidation:
         assert response.status_code == 200
         assert response.json()["voice_id"] == "voice-1"
 
+    def test_qwen_31_is_an_accepted_clone_target(self, client, no_auth, monkeypatch, stored_locally):
+        assert "qwen-audio-3.1-tts-flash" in config.VOICE_CLONE_MODELS
+        monkeypatch.setattr(
+            api_voices, "_create_voice", lambda *args, **kwargs: ("voice-31", "req-31")
+        )
+        files = {"audio": ("sample.wav", io.BytesIO(make_wav(rate=24000)), "audio/wav")}
+        response = client.post(
+            "/api/voices",
+            data={"target_model": "qwen-audio-3.1-tts-flash"},
+            files=files,
+        )
+        assert response.status_code == 200
+        assert response.json()["target_model"] == "qwen-audio-3.1-tts-flash"
+
     def test_cosyvoice_still_accepts_16khz(self, client, no_auth, monkeypatch, stored_locally):
         monkeypatch.setattr(
             api_voices, "_create_voice", lambda *args, **kwargs: ("voice-2", "req-2")
@@ -217,6 +231,29 @@ class TestRetryPolicy:
         assert message.startswith("音色复刻失败")
         assert "24 kHz" in message
 
+    def test_qwen_500_is_short_and_mentions_the_log(self):
+        message = api_voices._friendly_enroll_error(
+            RuntimeError("InternalError: feat extract missing ph.bin VoiceEnrollmentException"),
+            "qwen-audio-3.1-tts-flash",
+        )
+        assert "千问上游异常" in message
+        assert "日志" in message
+        assert "ph.bin" not in message, "the full envelope belongs in debug"
+
+    def test_attempt_diagnostics_are_attached_to_the_last_error(self, monkeypatch):
+        service = self.FakeService([RuntimeError("InternalError")] * api_voices.ENROLL_ATTEMPTS)
+        monkeypatch.setattr(api_voices, "_service", lambda: service)
+        monkeypatch.setattr(api_voices.time, "sleep", lambda _seconds: None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            api_voices._create_voice(
+                "https://app.example/media/x.wav", "demo", "qwen-audio-3.1-tts-flash"
+            )
+
+        assert service.calls == api_voices.ENROLL_ATTEMPTS
+        assert len(excinfo.value.attempt_info) == api_voices.ENROLL_ATTEMPTS
+        assert excinfo.value.attempt_info[0]["type"] == "RuntimeError"
+
     def test_enroll_status_separates_throttling_and_bad_input(self):
         assert api_voices._enroll_status(RuntimeError("Throttling: 429")) == 429
         assert api_voices._enroll_status(RuntimeError("InvalidParameter")) == 400
@@ -268,13 +305,38 @@ class TestErrorScrubbing:
         response = client.post("/api/voices", files=wav_upload)
         assert response.status_code == 502
         assert SECRET not in response.text
-        assert "***" in response.json()["detail"]
+        assert "***" in response.json()["debug"]["message"]
+        assert "***" not in response.json()["detail"]
 
     def test_enrollment_error_is_still_readable(
         self, client, no_auth, wav_upload, upstream_leaks_the_key
     ):
-        detail = client.post("/api/voices", files=wav_upload).json()["detail"]
-        assert detail.startswith("音色复刻失败")
+        body = client.post("/api/voices", files=wav_upload).json()
+        assert body["detail"].startswith("音色复刻失败")
+        assert body["debug"]["operation"] == "create_voice"
+        assert body["debug"]["model"] == "cosyvoice-v3-flash"
+
+    def test_qwen_failure_keeps_the_upstream_request_id(
+        self, client, no_auth, wav_upload, monkeypatch, stored_locally
+    ):
+        request_id = "1ef12052-ef3a-9f06-9257-a26bb5871368"
+
+        def boom(*args, **kwargs):
+            raise RuntimeError(
+                f"Request: {request_id}, Status Code: 500, Code: InternalError, "
+                "Error Message: feat extract missing ph.bin VoiceEnrollmentException"
+            )
+
+        monkeypatch.setattr(api_voices, "_create_voice", boom)
+        body = client.post(
+            "/api/voices",
+            data={"target_model": "qwen-audio-3.1-tts-flash"},
+            files=wav_upload,
+        ).json()
+
+        assert body["detail"].startswith("音色复刻失败：千问上游异常")
+        assert body["debug"]["request_id"] == request_id
+        assert "ph.bin" in body["debug"]["message"]
 
     def test_delete_error_never_carries_the_api_key(self, client, no_auth, monkeypatch):
         def boom(*args, **kwargs):
@@ -287,7 +349,8 @@ class TestErrorScrubbing:
         response = client.delete("/api/voices/voice-abc")
         assert response.status_code == 502
         assert SECRET not in response.text
-        assert "***" in response.json()["detail"]
+        assert "***" in response.json()["debug"]["message"]
+        assert "***" not in response.json()["detail"]
 
 
 class TestDescribe:
@@ -367,6 +430,36 @@ class TestStorageMisconfiguration:
         response = client.post("/api/voices", files=wav_upload)
         assert response.status_code == 500
         assert "PUBLIC_BASE_URL" in response.json()["detail"]
+
+
+class TestListCacheInvalidation:
+    def test_successful_enrollment_invalidates_the_list(
+        self, client, no_auth, monkeypatch, stored_locally, wav_upload
+    ):
+        invalidated = []
+        monkeypatch.setattr(api_voices, "_invalidate_list_cache", lambda: invalidated.append(True))
+        monkeypatch.setattr(
+            api_voices, "_create_voice", lambda *args, **kwargs: ("voice-new", "req-new")
+        )
+
+        response = client.post("/api/voices", files=wav_upload)
+
+        assert response.status_code == 200
+        assert invalidated == [True]
+
+    def test_successful_delete_invalidates_the_list(self, client, no_auth, monkeypatch):
+        invalidated = []
+
+        class Service:
+            @staticmethod
+            def delete_voice(voice_id):
+                return {"deleted": voice_id}
+
+        monkeypatch.setattr(api_voices, "_service", lambda: Service())
+        monkeypatch.setattr(api_voices, "_invalidate_list_cache", lambda: invalidated.append(True))
+
+        assert client.delete("/api/voices/voice-abc").status_code == 200
+        assert invalidated == [True]
 
 
 class TestHealthz:

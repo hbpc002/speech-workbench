@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,6 +27,7 @@ from . import (
     ws_tts,
 )
 from .dashscope_setup import bootstrap
+from .errors import DebugHTTPException
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -58,6 +59,16 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="语音工坊", lifespan=lifespan, docs_url="/api/docs")
+
+
+@app.exception_handler(DebugHTTPException)
+async def _debug_http_exception(_: Request, exc: DebugHTTPException) -> JSONResponse:
+    """Keep `detail` terse while still returning the scrubbed upstream text."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "debug": exc.debug},
+        headers=exc.headers,
+    )
 
 
 def _deployed_over_https(request: Request | None = None) -> bool:

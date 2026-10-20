@@ -131,6 +131,14 @@ let voiceList = [];
 /** When the list on screen was obtained, and whether from this browser's cache. */
 let voiceListFetchedAt = 0;
 let voiceListFromCache = false;
+/**
+ * Monotonic request id for list fetches. An older request (often the one fired
+ * at page load) must not overwrite the result of a newer force-refresh.
+ */
+let voiceListRequestSeq = 0;
+let cloneInFlight = false;
+let cloneStartedAt = 0;
+let cloneTimer = null;
 /** Non-empty when the server says cloning cannot work (storage/workspace/key). */
 let cloneBlockedReason = '';
 
@@ -216,7 +224,36 @@ function secondsOf(chunks, sampleRate = state.config.tts_sample_rate) {
 
 /** The clone button needs both a usable clip and a server that can enroll. */
 function syncCloneButton() {
-  el('voice-clone').disabled = !clip || Boolean(cloneBlockedReason);
+  const button = el('voice-clone');
+  if (!button) return;
+  button.disabled = cloneInFlight || !clip || Boolean(cloneBlockedReason);
+  button.textContent = cloneInFlight ? '复刻中…' : '开始复刻';
+  button.setAttribute('aria-busy', cloneInFlight ? 'true' : 'false');
+}
+
+function updateCloneProgress() {
+  const text = el('voice-clone-progress-text');
+  if (!text || !cloneStartedAt) return;
+  const seconds = Math.max(0, Math.round((Date.now() - cloneStartedAt) / 1000));
+  text.textContent = `正在复刻… ${seconds}s`;
+}
+
+function setCloneProgress(busy) {
+  cloneInFlight = busy;
+  const progress = el('voice-clone-progress');
+  if (busy) {
+    cloneStartedAt = Date.now();
+    if (progress) progress.hidden = false;
+    updateCloneProgress();
+    clearInterval(cloneTimer);
+    cloneTimer = setInterval(updateCloneProgress, 1000);
+  } else {
+    cloneStartedAt = 0;
+    clearInterval(cloneTimer);
+    cloneTimer = null;
+    if (progress) progress.hidden = true;
+  }
+  syncCloneButton();
 }
 
 function cloneBlockedMessage() {
@@ -448,37 +485,50 @@ function matchesFilter(entry) {
   return tagsFor(entry.voice_id || entry.voiceId || String(entry)).includes(filterTag);
 }
 
-async function refreshVoices({ force = false } = {}) {
+async function refreshVoices({ force = false, ensureVoice = null } = {}) {
+  const requestSeq = ++voiceListRequestSeq;
   try {
     // `force` is what the 刷新列表 button sends: it bypasses the server's
     // success and failure caches so the button cannot answer from a stale list
     // or from a recorded timeout.
     const response = await api(`/api/voices${force ? '?refresh=true' : ''}`);
+    // A page-load request can finish after a clone-triggered force refresh. The
+    // old payload is perfectly valid JSON, so only this counter can tell us it
+    // must not overwrite the newer list.
+    if (requestSeq !== voiceListRequestSeq) return;
+
     const list = Array.isArray(response.voices) ? response.voices : [];
-    voiceList = list;
+    // The upstream list is eventually consistent. Keep the voice we just
+    // enrolled on screen even if the first re-list has not caught up yet.
+    const merged =
+      ensureVoice && !list.some((entry) => voiceIdOf(entry) === voiceIdOf(ensureVoice))
+        ? [ensureVoice, ...list]
+        : list;
+    voiceList = merged;
     voiceListFetchedAt = Date.now();
     voiceListFromCache = false;
-    renderVoiceList(list, { stale: response.stale, warning: response.warning });
+    renderVoiceList(merged, { stale: response.stale });
     // The local copy is what the next page load paints before the network
     // answers, so it is written on every success, never on failure.
-    saveVoiceListCache(list).catch(() => {});
+    saveVoiceListCache(merged).catch(() => {});
   } catch (error) {
-    // Whatever is already on screen -- fetched or restored from the local cache
-    // -- stays there. A list the operator can still act on beats an empty tab.
-    log('voice-status', `读取音色列表失败：${error.message}`, 'error');
+    if (requestSeq !== voiceListRequestSeq) return;
+    // The upstream detail goes to the log console; this line stays readable.
+    log('voice-status', '刷新列表失败，已保留当前列表，请稍后重试。', 'error');
     // And it must not look current: say when it was actually last confirmed.
     const banner = el('voice-stale');
     if (voiceList.length) {
       banner.textContent = voiceListFromCache
-        ? `刷新失败，下面是这台设备缓存的列表（${stampOf(voiceListFetchedAt)}）。`
-        : `刷新失败，下面是 ${stampOf(voiceListFetchedAt)} 拿到的列表。`;
+        ? `刷新失败，显示的是这台设备 ${stampOf(voiceListFetchedAt)} 的列表。`
+        : `刷新失败，显示的是 ${stampOf(voiceListFetchedAt)} 的列表。`;
       banner.hidden = false;
     }
+    return error;
   }
 }
 
 /** Paint the list. `fromCache` marks it as this browser's last known state. */
-function renderVoiceList(list, { stale = false, warning = '', fromCache = false, fetchedAt = 0 } = {}) {
+function renderVoiceList(list, { stale = false, fromCache = false, fetchedAt = 0 } = {}) {
   const container = el('voice-list');
   const select = el('voice-play-select');
   // Only the cached render carries its own timestamp and provenance; a fetch
@@ -501,7 +551,7 @@ function renderVoiceList(list, { stale = false, warning = '', fromCache = false,
   const staleMessage = fromCache
     ? `显示的是这台设备 ${stampOf(fetchedAt)} 的列表${voiceListFetchedAt ? '，正在刷新…' : ''}。`
     : stale
-      ? `显示的是上一次成功获取的列表，可能不是最新的。${warning || ''}`
+      ? `显示的是上一次成功获取的列表，可能不是最新；请点「刷新列表」重试。`
       : '';
   staleBanner.hidden = !staleMessage;
   staleBanner.textContent = staleMessage;
@@ -635,11 +685,15 @@ async function deleteOne(voiceId, button) {
     // succeeded, and re-listing it would burn a round trip to learn something we
     // already know. The local cache is updated from the same list.
     voiceList = voiceList.filter((entry) => voiceIdOf(entry) !== voiceId);
+    // Invalidate any list fetch that started before this deletion, or its
+    // result will happily re-add the voice we just removed.
+    voiceListRequestSeq += 1;
     saveVoiceListCache(voiceList).catch(() => {});
     renderVoiceList(voiceList);
   } catch (error) {
     if (button) button.disabled = false;
-    log('voice-status', `删除 ${voiceId} 失败：${error.message}`, 'error');
+    log('voice-status', `删除 ${voiceId} 失败，详情见「日志」。`, 'error');
+    return error;
   }
 }
 
@@ -695,6 +749,7 @@ async function clearAll() {
   // Only the deletions that actually worked are gone; the rest stay on screen
   // so they can be retried one by one.
   voiceList = list.filter((entry) => !deletedIds.has(voiceIdOf(entry)));
+  voiceListRequestSeq += 1;
   saveVoiceListCache(voiceList).catch(() => {});
   renderVoiceList(voiceList);
 }
@@ -704,7 +759,7 @@ async function clearAll() {
 const CLONE_TIMEOUT_MS = 240000;
 
 async function clone() {
-  if (!clip) return;
+  if (cloneInFlight || !clip) return;
   if (cloneBlockedReason) {
     log('voice-status', cloneBlockedMessage(), 'error');
     return;
@@ -721,7 +776,7 @@ async function clone() {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CLONE_TIMEOUT_MS);
-  el('voice-clone').disabled = true;
+  setCloneProgress(true);
   log('voice-status', '正在复刻，通常需要几秒…', 'system');
 
   try {
@@ -732,24 +787,23 @@ async function clone() {
     });
     log('voice-status', `复刻成功：${voiceId}`, 'system');
     await recordClone({ ...base, voiceId, ok: true, elapsed: Date.now() - startedAt });
+    const entry = {
+      voice_id: voiceId,
+      target_model: targetModel,
+      prefix,
+      status: 'DEPLOYING',
+      status_label: '审核中',
+      status_class: 'warn',
+      gmt_create: new Date().toISOString(),
+    };
     // Shown right away, as still under review, because that is what the operator
     // would see for the next minute anyway: the voice needs to pass review before
-    // it can synthesise. The authoritative list follows in the background.
-    voiceList = [
-      {
-        voice_id: voiceId,
-        target_model: targetModel,
-        prefix,
-        status: 'DEPLOYING',
-        status_label: '审核中',
-        status_class: 'warn',
-        gmt_create: new Date().toISOString(),
-      },
-      ...voiceList,
-    ];
+    // it can synthesise. The authoritative list follows in the background --
+    // forced, because the list fetched at page load predates this voice.
+    voiceList = [entry, ...voiceList];
     saveVoiceListCache(voiceList).catch(() => {});
     renderVoiceList(voiceList);
-    refreshVoices();
+    refreshVoices({ force: true, ensureVoice: entry });
 
     el('voice-play-select').value = voiceId;
     // Assigning `.value` fires no `change` event, so the picker's own listener
@@ -766,6 +820,7 @@ async function clone() {
     await recordClone({ ...base, ok: false, error: message });
   } finally {
     clearTimeout(timer);
+    setCloneProgress(false);
     syncCloneButton();
   }
 }

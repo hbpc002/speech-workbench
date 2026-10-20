@@ -14,11 +14,14 @@
 // fetch is stubbed per case so each one can assert on what went over the wire.
 
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { clear, snapshot } from '../../static/js/debug_log.js';
 import { api, errorDetail } from '../../static/js/http.js';
 
 const realFetch = globalThis.fetch;
+
+beforeEach(() => clear());
 
 /** Records the request and replies with whatever the test queued. */
 function stubFetch(response) {
@@ -82,6 +85,53 @@ describe('api', () => {
   it('returns the response body on success even with no explicit method', async () => {
     stubFetch(jsonResponse(200, { voices: [] }));
     assert.deepEqual(await api('/api/voices'), { voices: [] });
+  });
+});
+
+describe('debug log integration', () => {
+  it('logs the command and the success line', async () => {
+    stubFetch(jsonResponse(200, { ok: true }));
+    await api('/api/voices');
+    const entries = snapshot();
+    assert.equal(entries[0].level, 'cmd');
+    assert.equal(entries[0].message, 'GET /api/voices');
+    assert.equal(entries[1].level, 'ok');
+    assert.match(entries[1].message, /GET \/api\/voices -> 200/);
+  });
+
+  it('attaches status and the server debug payload to the thrown error', async () => {
+    stubFetch(
+      jsonResponse(502, {
+        detail: '音色复刻失败：千问上游异常；详情见「日志」',
+        debug: { request_id: 'req-500', operation: 'create_voice' },
+      })
+    );
+
+    await assert.rejects(
+      () => api('/api/voices', { method: 'POST' }),
+      (err) => {
+        assert.equal(err.status, 502);
+        assert.equal(err.method, 'POST');
+        assert.deepEqual(err.debug, { request_id: 'req-500', operation: 'create_voice' });
+        return true;
+      }
+    );
+
+    const failed = snapshot().find((entry) => entry.level === 'error');
+    assert.ok(failed);
+    assert.equal(failed.detail.status, 502);
+    assert.equal(failed.detail.upstream.request_id, 'req-500');
+  });
+
+  it('logs a transport failure without pretending it was an HTTP status', async () => {
+    globalThis.fetch = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    await assert.rejects(() => api('/api/voices'));
+    const failed = snapshot().find((entry) => entry.level === 'error');
+    assert.ok(failed);
+    assert.match(failed.message, /请求失败/);
+    assert.equal(failed.detail.status, undefined);
   });
 });
 

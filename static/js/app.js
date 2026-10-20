@@ -7,6 +7,8 @@
 // which locked the operator behind the password prompt on every reload even
 // with a valid session cookie.
 import { api } from './http.js';
+import { record as debugRecord } from './debug_log.js';
+import { initDebugConsole } from './debug_console.js';
 import { TTS_VOICE_KEY, applyRecent, loadRecent, localStore, trackSelection } from './recent.js';
 // Imported, not re-exported in place: `export { el } from './dom.js'` gives
 // importers a binding but leaves `el` undefined *inside* this module, and the
@@ -56,6 +58,12 @@ export function updateMsg(node, text) {
 }
 
 export function log(container, text, kind = 'system') {
+  // Chat and recognition transcripts are already visible in their own panels;
+  // mirroring every token into the diagnostic log would bury the request lines.
+  // Status lines are the ones an operator wants beside the HTTP commands.
+  if (String(container).endsWith('-status')) {
+    debugRecord(kind === 'error' ? 'error' : 'info', text, { source: container });
+  }
   return appendMsg(container, text, kind);
 }
 
@@ -295,6 +303,7 @@ const TAB_MODULES = [
 ];
 
 async function start() {
+  initDebugConsole();
   try {
     await loadRuntimeConfig();
   } catch (error) {

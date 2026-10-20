@@ -23,6 +23,9 @@ _PATTERNS = (
 )
 
 MAX_LEN = 200
+# The log console is a debugging tool, not the one-line status message: a
+# 200-char cut of an upstream JSON envelope loses the part that explains it.
+DEBUG_MAX_LEN = 4000
 
 
 def scrub(text: object, limit: int = MAX_LEN) -> str:
@@ -49,6 +52,16 @@ def scrub(text: object, limit: int = MAX_LEN) -> str:
     if limit > 0 and len(out) > limit:
         out = out[:limit] + "…"
     return out
+
+
+def debug_detail(text: object) -> str:
+    """Scrub an upstream error for the browser's log console.
+
+    Still scrubbed, just longer than the one-line `detail`: the console is
+    explicitly for diagnosing failures, and truncating a JSON envelope at 200
+    characters is what made the original qwen error unreadable.
+    """
+    return scrub(text, limit=DEBUG_MAX_LEN)
 
 
 def log_only(label: str, exc: BaseException) -> str:

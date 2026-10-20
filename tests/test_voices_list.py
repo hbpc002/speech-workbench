@@ -14,6 +14,7 @@ Both are covered here. The timeout itself is simulated by patching the SDK call
 rather than by waiting, so the suite stays fast and offline.
 """
 
+import time
 from concurrent.futures import TimeoutError as FuturesTimeout
 
 import pytest
@@ -125,7 +126,15 @@ class TestTimeout:
     def test_the_message_says_what_to_do(self, client, monkeypatch):
         install(monkeypatch, FuturesTimeout())
         detail = client.get("/api/voices").json()["detail"]
-        assert "LIST_TIMEOUT_SECONDS" in detail
+        assert "超时" in detail
+        assert "刷新列表" in detail
+        assert "LIST_TIMEOUT_SECONDS" not in detail
+
+    def test_the_debug_payload_keeps_the_timeout_budget(self, client, monkeypatch):
+        install(monkeypatch, FuturesTimeout())
+        body = client.get("/api/voices").json()
+        assert body["debug"]["operation"] == "list_voices"
+        assert body["debug"]["timeout_seconds"] == api_voices.LIST_TIMEOUT_SECONDS
 
     def test_never_reports_an_empty_list_as_the_truth(self, client, monkeypatch):
         # An empty list means "you have no voices"; a timeout must not be able
@@ -234,6 +243,38 @@ class TestOtherFailures:
         # A 502 is a definite answer, so the operator is told rather than being
         # shown a silently-old list.
         assert client.get("/api/voices").status_code in (200, 502)
+
+
+class TestCacheInvalidation:
+    def test_a_write_ages_the_cache_but_keeps_the_stale_fallback(self):
+        payload = {"voices": [VOICE], "request_id": "req-old"}
+        api_voices._LIST_CACHE[""] = (time.monotonic(), payload)
+        api_voices._LIST_FAILURES[""] = time.monotonic()
+
+        api_voices._invalidate_list_cache()
+
+        stamp, kept = api_voices._LIST_CACHE[""]
+        assert kept is payload, "the old list is still useful when upstream is down"
+        assert stamp < time.monotonic() - api_voices.LIST_CACHE_SECONDS
+        assert "" not in api_voices._LIST_FAILURES
+
+    def test_the_next_call_refetches_after_invalidation(self, client, monkeypatch):
+        service = install(monkeypatch, [VOICE])
+        client.get("/api/voices")
+        api_voices._invalidate_list_cache()
+        client.get("/api/voices")
+        assert service.calls == 2
+
+    def test_a_failed_refetch_after_invalidation_still_serves_the_old_list(
+        self, client, monkeypatch
+    ):
+        install(monkeypatch, [VOICE])
+        client.get("/api/voices")
+        api_voices._invalidate_list_cache()
+        install(monkeypatch, FuturesTimeout())
+        body = client.get("/api/voices").json()
+        assert body["stale"] is True
+        assert body["voices"][0]["voice_id"] == "cosyvoice-v3-flash-a-b"
 
 
 class TestTimeoutIsConfigurable:

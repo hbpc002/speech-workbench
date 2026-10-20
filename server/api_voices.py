@@ -18,6 +18,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from . import config, redact, storage
+from .errors import DebugHTTPException
 from .voices import parse_clone_model, parse_clone_prefix, voice_status_label
 
 router = APIRouter(prefix="/api/voices", tags=["voices"])
@@ -43,11 +44,10 @@ LIST_FAIL_RETRY_SECONDS = 15.0
 _LIST_CACHE: dict[str, tuple[float, dict]] = {}
 _LIST_FAILURES: dict[str, float] = {}
 
-_LIST_TIMEOUT_HINT = (
-    "查询音色列表超时：DashScope 没有在 {seconds:.0f}s 内返回。"
-    "如果之前成功列过，这里会先显示上一次的列表；"
-    "稍等片刻点「刷新列表」重试，或调大 LIST_TIMEOUT_SECONDS。"
-)
+_LIST_TIMEOUT_HINT = "查询音色列表超时（{seconds:.0f}s）。"
+_LIST_TIMEOUT_RETRY = "请稍后点「刷新列表」重试。"
+_LIST_STALE_WARNING = "显示的是上一次成功获取的列表，可能不是最新。"
+_LIST_FAILED_HINT = "查询音色列表失败，请稍后点「刷新列表」重试。"
 
 
 def _service() -> VoiceEnrollmentService:
@@ -71,12 +71,32 @@ def _stale_or_fail(cache_key: str) -> dict:
         return {
             **stale[1],
             "stale": True,
-            "warning": _LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS),
+            "warning": _LIST_STALE_WARNING,
         }
-    raise HTTPException(
+    raise DebugHTTPException(
         status_code=504,
-        detail=_LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS),
+        detail=_LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS) + _LIST_TIMEOUT_RETRY,
+        debug={
+            "operation": "list_voices",
+            "timeout_seconds": LIST_TIMEOUT_SECONDS,
+            "cached": False,
+        },
     )
+
+
+def _invalidate_list_cache() -> None:
+    """Make every cached list stale after a write.
+
+    Cloning or deleting changes what the next list should return, but keeping
+    the old payload matters: if DashScope is unreachable immediately afterwards,
+    `_stale_or_fail` can still show it instead of an empty tab. Ageing the entry
+    past the success window is enough to force a refetch; deleting it would
+    throw away the stale fallback.
+    """
+    expired = time.monotonic() - LIST_CACHE_SECONDS - 1
+    for key, (_stamp, payload) in list(_LIST_CACHE.items()):
+        _LIST_CACHE[key] = (expired, payload)
+    _LIST_FAILURES.clear()
 
 
 @router.get("")
@@ -120,8 +140,11 @@ def list_voices(prefix: str = "", refresh: bool = False) -> dict:
         return _stale_or_fail(cache_key)
     except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
         _LIST_FAILURES[cache_key] = time.monotonic()
-        raise HTTPException(
-            status_code=502, detail=f"查询音色列表失败: {redact.log_only('voices', exc)}"
+        redact.log_only("voices", exc)
+        raise DebugHTTPException(
+            status_code=502,
+            detail=_LIST_FAILED_HINT,
+            debug=_debug_payload(exc, "list_voices", prefix=prefix or None),
         ) from exc
     finally:
         # wait=False matters: the context manager would block on the hung
@@ -258,6 +281,36 @@ def _error_text(exc: BaseException) -> str:
     return " ".join(parts)
 
 
+def _request_id(exc: BaseException) -> str:
+    """Best-effort request id, whether the SDK exposed it or only printed it."""
+    for attribute in ("_request_id", "request_id"):
+        value = getattr(exc, attribute, None)
+        if value:
+            return str(value)
+    match = re.search(r"\bRequest:\s*([0-9a-zA-Z-]+)", _error_text(exc))
+    return match.group(1) if match else ""
+
+
+def _debug_payload(exc: BaseException, operation: str, **extra) -> dict:
+    """The scrubbed envelope shown in the browser's log console.
+
+    `_friendly_enroll_error` is intentionally short enough to sit under a
+    button; this is where the request id and upstream message survive.
+    """
+    payload = {
+        "operation": operation,
+        "type": type(exc).__name__,
+        "message": redact.debug_detail(_error_text(exc)),
+        "status_code": getattr(exc, "status_code", None),
+        "code": getattr(exc, "code", None),
+        "request_id": _request_id(exc),
+    }
+    for key, value in extra.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Retry only failures that have a chance of succeeding on the next call."""
     text = _error_text(exc).lower()
@@ -315,6 +368,7 @@ def _create_voice(public_url: str, prefix: str, target_model: str) -> tuple[str,
     the actionable message.
     """
     last_error: Exception | None = None
+    attempt_log: list[dict] = []
     started = time.monotonic()
 
     for attempt in range(1, ENROLL_ATTEMPTS + 1):
@@ -341,6 +395,15 @@ def _create_voice(public_url: str, prefix: str, target_model: str) -> tuple[str,
         except Exception as exc:  # noqa: BLE001 - classified below
             last_error = exc
             elapsed = time.monotonic() - attempt_started
+            attempt_log.append(
+                {
+                    "attempt": attempt,
+                    "elapsed_ms": round(elapsed * 1000),
+                    "request_id": _safe_request_id(service),
+                    "type": type(exc).__name__,
+                    "message": redact.scrub(exc, limit=1000),
+                }
+            )
             print(
                 f"[voices] attempt {attempt}/{ENROLL_ATTEMPTS} failed after "
                 f"{elapsed:.1f}s model={target_model} prefix={prefix} "
@@ -355,6 +418,13 @@ def _create_voice(public_url: str, prefix: str, target_model: str) -> tuple[str,
             time.sleep(delay)
 
     assert last_error is not None
+    # Python exceptions accept attributes, so carry the per-attempt diagnostics
+    # to `create_voice` without wrapping the exception type (which the status
+    # mapper and its tests rely on).
+    try:
+        setattr(last_error, "attempt_info", attempt_log)
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the real error
+        pass
     raise last_error
 
 
@@ -441,12 +511,26 @@ def _validate_enroll_audio(payload: bytes, target_model: str) -> None:
 
 
 def _friendly_enroll_error(exc: BaseException, target_model: str) -> str:
-    """Turn upstream text into an instruction the operator can act on."""
+    """Turn upstream text into one short, actionable sentence.
+
+    The full upstream envelope goes to `debug` and the server log. Interpolating
+    it here made the status line hundreds of characters long, and the useful
+    part -- the request id -- was still the least visible part of it.
+    """
     text = _error_text(exc)
     low = text.lower()
-    upstream = redact.scrub(text)
+    attempts = len(getattr(exc, "attempt_info", []) or [])
+    action = (
+        f"已尝试 {attempts} 次，可稍后重试或改用 CosyVoice"
+        if attempts > 1
+        else "可稍后重试或改用 CosyVoice"
+    )
 
-    if "inputdownloadfailed" in low or "failed to download the input" in low or "download the input file" in low:
+    if target_model.startswith("qwen-audio") and (
+        "internalerror" in low or "internal error" in low or "feat extract missing ph.bin" in low
+    ):
+        hint = f"千问上游异常（500，非录音问题），{action}"
+    elif "inputdownloadfailed" in low or "failed to download the input" in low or "download the input file" in low:
         hint = (
             "阿里云下载不到复刻样本。检查 PUBLIC_BASE_URL 是否为公网可访问地址、"
             "Vercel Blob 是否为 Public，以及音频是否小于 10MB"
@@ -468,8 +552,8 @@ def _friendly_enroll_error(exc: BaseException, target_model: str) -> str:
     elif "unauthorized" in low or "invalid authorization" in low or "invalid api" in low or "accessdenied" in low or "access denied" in low:
         hint = "API Key 无效、没有该模型权限，或不属于当前业务空间"
     else:
-        hint = "上游返回了错误，请稍后重试；如果持续失败，把下面这行发给维护者"
-    return f"音色复刻失败：{hint}（上游：{upstream}）"
+        hint = "上游返回了错误，请稍后重试"
+    return f"音色复刻失败：{hint}；详情见「日志」"
 
 
 def _enroll_status(exc: BaseException) -> int:
@@ -544,9 +628,16 @@ async def create_voice(
         redact.log_only("voices.enroll", exc)
         status = _enroll_status(exc)
         headers = {"Retry-After": "20"} if status == 429 else None
-        raise HTTPException(
+        debug = _debug_payload(
+            exc, "create_voice", model=target_model, prefix=prefix
+        )
+        attempt_info = getattr(exc, "attempt_info", None)
+        if attempt_info:
+            debug["attempts"] = attempt_info
+        raise DebugHTTPException(
             status_code=status,
             detail=_friendly_enroll_error(exc, target_model),
+            debug=debug,
             headers=headers,
         ) from exc
     finally:
@@ -555,6 +646,10 @@ async def create_voice(
         # in server/storage.py removes it once the fetch has certainly landed.
         storage.purge_expired()
 
+    # The list the tab fetched on page load predates this voice. Ageing it here
+    # means the immediate follow-up refresh sees the new voice instead of the
+    # cache, while still leaving a stale fallback if DashScope is down.
+    _invalidate_list_cache()
     return {"voice_id": voice_id, "request_id": request_id, "target_model": target_model}
 
 
@@ -563,7 +658,11 @@ def delete_voice(voice_id: str) -> dict:
     try:
         _service().delete_voice(voice_id)
     except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
-        raise HTTPException(
-            status_code=502, detail=f"删除音色失败: {redact.log_only('voices.delete', exc)}"
+        redact.log_only("voices.delete", exc)
+        raise DebugHTTPException(
+            status_code=502,
+            detail="删除音色失败，请稍后重试；详情见「日志」。",
+            debug=_debug_payload(exc, "delete_voice", voice_id=voice_id),
         ) from exc
+    _invalidate_list_cache()
     return {"deleted": voice_id}

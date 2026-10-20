@@ -37,3 +37,12 @@ def test_still_scrubs_the_speech_key():
 
 def test_truncates_long_bodies():
     assert len(redact.scrub("x" * 500)) <= redact.MAX_LEN + 1
+
+
+def test_debug_detail_keeps_long_envelopes_but_still_scrubs():
+    key = config.LLM_API_KEY
+    body = f"{'context ' * 60}Authorization: Bearer {key} {'tail ' * 60}"
+    out = redact.debug_detail(body)
+    assert key not in out
+    assert len(out) > redact.MAX_LEN
+    assert len(out) <= redact.DEBUG_MAX_LEN + 1
