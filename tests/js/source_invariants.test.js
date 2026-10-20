@@ -245,12 +245,14 @@ describe('voice enrollment', () => {
     assert.match(source, /aria-busy/);
   });
 
-  it('forces a fresh list after cloning and keeps a just-created voice', () => {
-    // The list fetched at page load predates the new voice, and the server's
-    // 60 s cache would otherwise answer the follow-up refresh with it missing.
+  it('keeps a just-created voice locally without a forced list refresh', () => {
+    // The enrollment response already proves the voice exists. A forced list
+    // refresh here would bypass the server cache and turn a transient upstream
+    // timeout into an error right after every successful clone.
     const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
-    assert.match(source, /voiceListRequestSeq/);
-    assert.match(source, /refreshVoices\(\{ force: true, ensureVoice: entry \}\)/);
+    assert.match(source, /voiceList = \[entry, \.\.\.voiceList\]/);
+    assert.match(source, /saveVoiceListCache\(voiceList\)/);
+    assert.doesNotMatch(source, /refreshVoices\(\{ force: true, ensureVoice: entry \}\)/);
     assert.match(source, /requestSeq !== voiceListRequestSeq/);
   });
 });

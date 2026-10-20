@@ -11,8 +11,9 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeout
 
+import dashscope
+import requests
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
@@ -27,13 +28,15 @@ router = APIRouter(prefix="/api/voices", tags=["voices"])
 # digits and lowercase letters only, less than 10 characters.
 PREFIX_PATTERN = re.compile(r"^[a-z0-9]{1,9}$")
 
-# The SDK's own connect timeout is 300 s, which is also Vercel's per-function
-# limit: one unreachable upstream turns into a 504 for the whole invocation.
-# Both are env-configurable because the right value depends on where the
-# function runs: a Vercel function in Tokyo reaching DashScope in Beijing is a
-# different latency budget than a laptop on the same continent.
+# The SDK's own timeout is 300 s, which is also Vercel's per-function limit.
+# The list call uses the documented HTTP endpoint directly so this value really
+# bounds the socket: the SDK's enrollment wrapper retries internally and would
+# keep the request alive long after the caller gave up.
 LIST_TIMEOUT_SECONDS = config._env_float("LIST_TIMEOUT_SECONDS", default=20.0)
+LIST_CONNECT_TIMEOUT_SECONDS = config._env_float("LIST_CONNECT_TIMEOUT_SECONDS", default=5.0)
 LIST_CACHE_SECONDS = config._env_float("LIST_CACHE_SECONDS", default=60.0)
+
+_LIST_ENDPOINT = "/services/audio/tts/customization"
 
 # How long a failed attempt is remembered. Without this every page load pays the
 # full timeout again: nothing is cached on failure, so a slow upstream turns
@@ -56,7 +59,79 @@ def _service() -> VoiceEnrollmentService:
     return VoiceEnrollmentService()
 
 
-def _stale_or_fail(cache_key: str) -> dict:
+class _VoiceListError(RuntimeError):
+    """A non-200 list response, carrying the fields the log console needs."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        status_code: int | None = None,
+        code: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.status_code = status_code
+        self.code = code
+
+
+def _list_voices(prefix: str) -> tuple[list[dict], str]:
+    """Fetch the voice list with a real transport timeout.
+
+    `VoiceEnrollmentService.list_voices` hides a 300 s SDK timeout and retries
+    timeouts itself, so wrapping it in another thread only hides the problem:
+    the caller gets a 504 while the HTTP request keeps running. This endpoint is
+    stable and documented, so call it directly and let requests enforce the
+    connect/read budget.
+    """
+    payload = {
+        "model": "voice-enrollment",
+        "input": {
+            "action": "list_voice",
+            "page_index": 0,
+            "page_size": 50,
+            **({"prefix": prefix} if prefix else {}),
+        },
+    }
+    response = requests.post(
+        f"{dashscope.base_http_api_url.rstrip('/')}{_LIST_ENDPOINT}",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {config.API_KEY or dashscope.api_key or ''}",
+            "Content-Type": "application/json",
+        },
+        timeout=(LIST_CONNECT_TIMEOUT_SECONDS, LIST_TIMEOUT_SECONDS),
+    )
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+
+    request_id = str(body.get("request_id") or response.headers.get("X-Request-Id") or "")
+    if response.status_code != 200:
+        code = str(body.get("code") or "")
+        message = str(body.get("message") or response.text or f"HTTP {response.status_code}")
+        raise _VoiceListError(
+            message,
+            request_id=request_id,
+            status_code=response.status_code,
+            code=code,
+        )
+
+    output = body.get("output")
+    voices = output.get("voice_list") if isinstance(output, dict) else None
+    if not isinstance(voices, list):
+        raise _VoiceListError(
+            "response did not contain output.voice_list",
+            request_id=request_id,
+            status_code=response.status_code,
+        )
+    return voices, request_id
+
+
+def _stale_or_fail(cache_key: str, *, elapsed: float | None = None) -> dict:
     """Serve the last good list, or give up.
 
     A stale list is far more useful than a hard 504: the operator can still see
@@ -73,14 +148,19 @@ def _stale_or_fail(cache_key: str) -> dict:
             "stale": True,
             "warning": _LIST_STALE_WARNING,
         }
+    debug = {
+        "operation": "list_voices",
+        "timeout_seconds": LIST_TIMEOUT_SECONDS,
+        "connect_timeout_seconds": LIST_CONNECT_TIMEOUT_SECONDS,
+        "endpoint": _LIST_ENDPOINT,
+        "cached": False,
+    }
+    if elapsed is not None:
+        debug["elapsed_seconds"] = round(elapsed, 3)
     raise DebugHTTPException(
         status_code=504,
         detail=_LIST_TIMEOUT_HINT.format(seconds=LIST_TIMEOUT_SECONDS) + _LIST_TIMEOUT_RETRY,
-        debug={
-            "operation": "list_voices",
-            "timeout_seconds": LIST_TIMEOUT_SECONDS,
-            "cached": False,
-        },
+        debug=debug,
     )
 
 
@@ -104,9 +184,8 @@ def list_voices(prefix: str = "", refresh: bool = False) -> dict:
     """List enrolled voices, optionally narrowed to one prefix.
 
     Cached briefly: this runs on every page load, and each miss is an outbound
-    call to DashScope. On a platform where that call can hang (Vercel observed
-    a 300 s connect timeout), an uncached endpoint burns the whole function
-    budget on every reload.
+    call to DashScope. The request has a real connect/read timeout so a slow
+    upstream cannot burn the whole Vercel function budget.
 
     Failures are cached too. A successful list is worth keeping; so is the
     knowledge that the last attempt just timed out, because re-paying the full
@@ -125,36 +204,39 @@ def list_voices(prefix: str = "", refresh: bool = False) -> dict:
         # Serve whatever we have rather than hanging again straight away.
         return _stale_or_fail(cache_key)
 
-    service = _service()
     started = time.monotonic()
-    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        voices = pool.submit(
-            service.list_voices, page_index=0, page_size=50, **({"prefix": prefix} if prefix else {})
-        ).result(timeout=LIST_TIMEOUT_SECONDS)
-    except FuturesTimeout:
+        voices, request_id = _list_voices(prefix)
+    except requests.Timeout:
         elapsed = time.monotonic() - started
         _LIST_FAILURES[cache_key] = time.monotonic()
-        print(f"[voices] list_voices timed out after {elapsed:.1f}s (limit {LIST_TIMEOUT_SECONDS:.0f}s)")
+        print(
+            f"[voices] list_voices timed out after {elapsed:.1f}s "
+            f"(read {LIST_TIMEOUT_SECONDS:.0f}s, connect {LIST_CONNECT_TIMEOUT_SECONDS:.1f}s)"
+        )
         # Never serve an empty list as if it were the truth.
-        return _stale_or_fail(cache_key)
+        return _stale_or_fail(cache_key, elapsed=elapsed)
     except Exception as exc:  # noqa: BLE001 - scrubbed before it reaches the browser
+        elapsed = time.monotonic() - started
         _LIST_FAILURES[cache_key] = time.monotonic()
         redact.log_only("voices", exc)
         raise DebugHTTPException(
             status_code=502,
             detail=_LIST_FAILED_HINT,
-            debug=_debug_payload(exc, "list_voices", prefix=prefix or None),
+            debug=_debug_payload(
+                exc,
+                "list_voices",
+                prefix=prefix or None,
+                elapsed_seconds=round(elapsed, 3),
+                connect_timeout_seconds=LIST_CONNECT_TIMEOUT_SECONDS,
+                endpoint=_LIST_ENDPOINT,
+            ),
         ) from exc
-    finally:
-        # wait=False matters: the context manager would block on the hung
-        # worker and reintroduce the timeout we just enforced.
-        pool.shutdown(wait=False, cancel_futures=True)
 
     _LIST_FAILURES.pop(cache_key, None)
     payload = {
         "voices": [_describe(entry) for entry in voices],
-        "request_id": service.get_last_request_id(),
+        "request_id": request_id,
     }
     _LIST_CACHE[cache_key] = (time.monotonic(), payload)
     return payload

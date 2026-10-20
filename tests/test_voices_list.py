@@ -10,14 +10,14 @@ two things went wrong:
   * nothing was cached on failure, so every single reload paid the full timeout
     again, which is what makes it feel permanently broken rather than slow
 
-Both are covered here. The timeout itself is simulated by patching the SDK call
-rather than by waiting, so the suite stays fast and offline.
+Both are covered here. The timeout itself is simulated by patching the list
+request rather than by waiting, so the suite stays fast and offline.
 """
 
 import time
-from concurrent.futures import TimeoutError as FuturesTimeout
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 from server import api_voices
@@ -39,21 +39,18 @@ def client():
     return TestClient(app)
 
 
-class FakeService:
-    """Stands in for VoiceEnrollmentService."""
+class FakeList:
+    """Stands in for the direct DashScope list request."""
 
     def __init__(self, behaviour):
         self.behaviour = behaviour
         self.calls = 0
 
-    def list_voices(self, **kwargs):
+    def __call__(self, prefix):
         self.calls += 1
         if isinstance(self.behaviour, Exception):
             raise self.behaviour
-        return self.behaviour
-
-    def get_last_request_id(self):
-        return "req-fake"
+        return self.behaviour, "req-fake"
 
 
 VOICE = {"voice_id": "cosyvoice-v3-flash-a-b", "status": "OK", "gmt_create": "2026-10-14 13:38:02"}
@@ -74,9 +71,9 @@ def expire_cache():
 
 
 def install(monkeypatch, behaviour):
-    service = FakeService(behaviour)
-    monkeypatch.setattr(api_voices, "_service", lambda: service)
-    return service
+    lister = FakeList(behaviour)
+    monkeypatch.setattr(api_voices, "_list_voices", lister)
+    return lister
 
 
 class TestHappyPath:
@@ -96,7 +93,7 @@ class TestHappyPath:
     def test_an_explicit_refresh_ignores_the_failure_window(self, client, monkeypatch):
         # The 刷新列表 button must actually retry. A refresh that answers from
         # the failure cache is a button that does nothing.
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         assert api_voices._LIST_FAILURES, "the failure should be recorded"
 
@@ -112,7 +109,7 @@ class TestHappyPath:
         assert service.calls == 2
 
     def test_a_plain_call_still_respects_the_failure_window(self, client, monkeypatch):
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         install(monkeypatch, [VOICE])
         assert client.get("/api/voices").status_code == 504
@@ -120,26 +117,30 @@ class TestHappyPath:
 
 class TestTimeout:
     def test_504_when_nothing_was_ever_cached(self, client, monkeypatch):
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         assert client.get("/api/voices").status_code == 504
 
     def test_the_message_says_what_to_do(self, client, monkeypatch):
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         detail = client.get("/api/voices").json()["detail"]
         assert "超时" in detail
         assert "刷新列表" in detail
         assert "LIST_TIMEOUT_SECONDS" not in detail
 
     def test_the_debug_payload_keeps_the_timeout_budget(self, client, monkeypatch):
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         body = client.get("/api/voices").json()
         assert body["debug"]["operation"] == "list_voices"
         assert body["debug"]["timeout_seconds"] == api_voices.LIST_TIMEOUT_SECONDS
+        assert body["debug"]["connect_timeout_seconds"] == api_voices.LIST_CONNECT_TIMEOUT_SECONDS
+        assert body["debug"]["endpoint"] == api_voices._LIST_ENDPOINT
+        assert body["debug"]["elapsed_seconds"] >= 0
+        assert body["debug"]["cached"] is False
 
     def test_never_reports_an_empty_list_as_the_truth(self, client, monkeypatch):
         # An empty list means "you have no voices"; a timeout must not be able
         # to masquerade as one, so this must be an error rather than a 200.
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         response = client.get("/api/voices")
         assert response.status_code != 200
         assert "voices" not in response.json()
@@ -149,19 +150,19 @@ class TestFailureIsCached:
     """The compounding part: without this, every reload re-pays the timeout."""
 
     def test_a_recent_failure_is_not_retried(self, client, monkeypatch):
-        service = install(monkeypatch, FuturesTimeout())
+        service = install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         client.get("/api/voices")
         client.get("/api/voices")
         assert service.calls == 1, "a recent failure should not re-hang the caller"
 
     def test_it_is_still_a_504_without_a_cached_list(self, client, monkeypatch):
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         assert client.get("/api/voices").status_code == 504
 
     def test_the_retry_window_expires(self, client, monkeypatch):
-        service = install(monkeypatch, FuturesTimeout())
+        service = install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         assert service.calls == 1
 
@@ -179,7 +180,7 @@ class TestStaleFallback:
         assert client.get("/api/voices").status_code == 200
 
         expire_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         response = client.get("/api/voices")
         assert response.status_code == 200
         body = response.json()
@@ -189,7 +190,7 @@ class TestStaleFallback:
         install(monkeypatch, [VOICE])
         client.get("/api/voices")
         expire_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         assert client.get("/api/voices").json()["stale"] is True
 
     def test_a_fresh_list_is_not_marked_stale(self, client, monkeypatch):
@@ -200,7 +201,7 @@ class TestStaleFallback:
         install(monkeypatch, [VOICE])
         client.get("/api/voices")
         expire_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         assert client.get("/api/voices").json()["warning"]
 
     def test_the_cached_success_payload_is_not_mutated(self, client, monkeypatch):
@@ -209,15 +210,24 @@ class TestStaleFallback:
         install(monkeypatch, [VOICE])
         client.get("/api/voices")
         expire_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")
         assert "stale" not in api_voices._LIST_CACHE[""][1]
+
+    def test_an_explicit_refresh_still_gets_the_stale_fallback(self, client, monkeypatch):
+        install(monkeypatch, [VOICE])
+        client.get("/api/voices")
+        expire_cache()
+        install(monkeypatch, requests.Timeout("slow"))
+        body = client.get("/api/voices?refresh=true").json()
+        assert body["stale"] is True
+        assert body["voices"][0]["voice_id"] == "cosyvoice-v3-flash-a-b"
 
     def test_stale_is_served_even_during_the_failure_window(self, client, monkeypatch):
         install(monkeypatch, [VOICE])
         client.get("/api/voices")
         expire_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         client.get("/api/voices")          # records the failure
         again = client.get("/api/voices")   # inside the window
         assert again.status_code == 200
@@ -271,10 +281,100 @@ class TestCacheInvalidation:
         install(monkeypatch, [VOICE])
         client.get("/api/voices")
         api_voices._invalidate_list_cache()
-        install(monkeypatch, FuturesTimeout())
+        install(monkeypatch, requests.Timeout("slow"))
         body = client.get("/api/voices").json()
         assert body["stale"] is True
         assert body["voices"][0]["voice_id"] == "cosyvoice-v3-flash-a-b"
+
+
+class TestDirectListRequest:
+    """The list call bypasses the SDK so its timeout is actually enforceable."""
+
+    def test_sends_the_documented_payload_with_transport_timeouts(self, monkeypatch):
+        calls = {}
+
+        class Response:
+            status_code = 200
+            headers = {}
+
+            @staticmethod
+            def json():
+                return {"output": {"voice_list": [VOICE]}, "request_id": "req-upstream"}
+
+        def fake_post(url, **kwargs):
+            calls["url"] = url
+            calls.update(kwargs)
+            return Response()
+
+        monkeypatch.setattr(api_voices.dashscope, "base_http_api_url", "https://example.test/api/v1")
+        monkeypatch.setattr(api_voices.config, "API_KEY", "sk-test")
+        monkeypatch.setattr(api_voices.requests, "post", fake_post)
+
+        voices, request_id = api_voices._list_voices("abc")
+
+        assert voices == [VOICE]
+        assert request_id == "req-upstream"
+        assert calls["url"] == "https://example.test/api/v1" + api_voices._LIST_ENDPOINT
+        assert calls["timeout"] == (
+            api_voices.LIST_CONNECT_TIMEOUT_SECONDS,
+            api_voices.LIST_TIMEOUT_SECONDS,
+        )
+        assert calls["json"]["input"]["action"] == "list_voice"
+        assert calls["json"]["input"]["prefix"] == "abc"
+        assert calls["headers"]["Authorization"] == "Bearer sk-test"
+
+    def test_omits_the_prefix_when_listing_everything(self, monkeypatch):
+        sent = {}
+
+        class Response:
+            status_code = 200
+            headers = {}
+
+            @staticmethod
+            def json():
+                return {"output": {"voice_list": []}, "request_id": "req-all"}
+
+        def fake_post(_url, **kwargs):
+            sent.update(kwargs)
+            return Response()
+
+        monkeypatch.setattr(api_voices.requests, "post", fake_post)
+        api_voices._list_voices("")
+
+        assert "prefix" not in sent["json"]["input"]
+
+    def test_a_non_200_response_keeps_the_upstream_request_id(self, monkeypatch):
+        class Response:
+            status_code = 429
+            headers = {}
+            text = '{"code":"Throttling","message":"slow down"}'
+
+            @staticmethod
+            def json():
+                return {"code": "Throttling", "message": "slow down", "request_id": "req-limited"}
+
+        monkeypatch.setattr(api_voices.requests, "post", lambda *_a, **_k: Response())
+
+        with pytest.raises(api_voices._VoiceListError) as caught:
+            api_voices._list_voices("")
+
+        assert caught.value.request_id == "req-limited"
+        assert caught.value.status_code == 429
+        assert caught.value.code == "Throttling"
+
+    def test_an_unexpected_body_is_an_error_not_an_empty_list(self, monkeypatch):
+        class Response:
+            status_code = 200
+            headers = {}
+
+            @staticmethod
+            def json():
+                return {"output": {}}
+
+        monkeypatch.setattr(api_voices.requests, "post", lambda *_a, **_k: Response())
+
+        with pytest.raises(api_voices._VoiceListError):
+            api_voices._list_voices("")
 
 
 class TestTimeoutIsConfigurable:

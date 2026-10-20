@@ -47,6 +47,7 @@ import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } from '/static/js/tag_dialog.js';
 import { MAX_SECONDS, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
+import { voicePrefixFor } from '/static/js/voice_prefix.js';
 
 const MAX_PREVIEWS = 30;
 const MAX_CLONE_LOGS = 50;
@@ -485,32 +486,26 @@ function matchesFilter(entry) {
   return tagsFor(entry.voice_id || entry.voiceId || String(entry)).includes(filterTag);
 }
 
-async function refreshVoices({ force = false, ensureVoice = null } = {}) {
+async function refreshVoices({ force = false } = {}) {
   const requestSeq = ++voiceListRequestSeq;
   try {
     // `force` is what the 刷新列表 button sends: it bypasses the server's
     // success and failure caches so the button cannot answer from a stale list
     // or from a recorded timeout.
     const response = await api(`/api/voices${force ? '?refresh=true' : ''}`);
-    // A page-load request can finish after a clone-triggered force refresh. The
-    // old payload is perfectly valid JSON, so only this counter can tell us it
-    // must not overwrite the newer list.
+    // A page-load request can finish after a local edit. The old payload is
+    // perfectly valid JSON, so only this counter can tell us it must not
+    // overwrite the newer list.
     if (requestSeq !== voiceListRequestSeq) return;
 
     const list = Array.isArray(response.voices) ? response.voices : [];
-    // The upstream list is eventually consistent. Keep the voice we just
-    // enrolled on screen even if the first re-list has not caught up yet.
-    const merged =
-      ensureVoice && !list.some((entry) => voiceIdOf(entry) === voiceIdOf(ensureVoice))
-        ? [ensureVoice, ...list]
-        : list;
-    voiceList = merged;
+    voiceList = list;
     voiceListFetchedAt = Date.now();
     voiceListFromCache = false;
-    renderVoiceList(merged, { stale: response.stale });
+    renderVoiceList(list, { stale: response.stale });
     // The local copy is what the next page load paints before the network
     // answers, so it is written on every success, never on failure.
-    saveVoiceListCache(merged).catch(() => {});
+    saveVoiceListCache(list).catch(() => {});
   } catch (error) {
     if (requestSeq !== voiceListRequestSeq) return;
     // The upstream detail goes to the log console; this line stays readable.
@@ -798,12 +793,12 @@ async function clone() {
     };
     // Shown right away, as still under review, because that is what the operator
     // would see for the next minute anyway: the voice needs to pass review before
-    // it can synthesise. The authoritative list follows in the background --
-    // forced, because the list fetched at page load predates this voice.
+    // it can synthesise. Deliberately no follow-up list call: the enrollment
+    // response already tells us the voice exists, while forcing a list refresh
+    // here bypasses the server cache and exposes a transient upstream timeout.
     voiceList = [entry, ...voiceList];
     saveVoiceListCache(voiceList).catch(() => {});
     renderVoiceList(voiceList);
-    refreshVoices({ force: true, ensureVoice: entry });
 
     el('voice-play-select').value = voiceId;
     // Assigning `.value` fires no `change` event, so the picker's own listener
@@ -1269,6 +1264,9 @@ function syncOutputs() {
 }
 
 export function init() {
+  // MMDDHHmm: eight digits stay inside the upstream's nine-character limit.
+  el('voice-prefix').value = voicePrefixFor();
+
   el('voice-record').addEventListener('click', toggleRecording);
   el('voice-clone').addEventListener('click', clone);
   el('voice-download').addEventListener('click', downloadClip);
