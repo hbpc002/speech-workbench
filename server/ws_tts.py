@@ -9,21 +9,41 @@ request would return immediately and mis-attribute audio between segments.
 
 import asyncio
 import json
+import random
 import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from . import config, redact
+from . import config, redact, upstream_probe
 from .tts_support import WebSocketSynthCallback, build_synthesizer
 
 # The SDK hardcodes a five-second WebSocket connect wait. From a functions
 # platform that reaches Beijing over the public internet, that occasionally
 # expires before the TLS/WS handshake finishes. Nothing has been sent upstream
-# at that point, so one fresh attempt is safe and does not duplicate audio.
-TTS_CONNECT_RETRY_ATTEMPTS = 2
-TTS_CONNECT_RETRY_DELAY_SECONDS = 0.5
+# at that point, so a fresh attempt is safe and does not duplicate audio.
+#
+# Attempt count and backoff come from config (TTS_CONNECT_*): a flaky
+# cross-border route needs more than the single retry this used to do, and the
+# right numbers differ per deployment.
 SDK_CONNECT_TIMEOUT_SECONDS = 5
 _CONNECT_TIMEOUT_MARKER = "websocket connection could not established"
+
+
+def _retry_delay(attempt: int) -> float:
+    """Exponential backoff with jitter, for the gap after `attempt` failed."""
+    base = config.TTS_CONNECT_BACKOFF_SECONDS * (2 ** max(0, attempt - 1))
+    delay = min(base, config.TTS_CONNECT_BACKOFF_MAX_SECONDS)
+    if config.TTS_CONNECT_JITTER_SECONDS > 0:
+        delay += random.uniform(0, config.TTS_CONNECT_JITTER_SECONDS)
+    return delay
+
+
+async def _probe_endpoint(endpoint: str) -> dict | None:
+    """Diagnose a failed connect without ever masking the original error."""
+    try:
+        return await upstream_probe.probe(endpoint, config.TTS_PROBE_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - a probe must never become the error
+        return {"ok": False, "stage": "probe_failed", "error": redact.scrub(exc)}
 
 
 class _TTSSynthesisError(RuntimeError):
@@ -44,6 +64,7 @@ class _TTSSynthesisError(RuntimeError):
         total_elapsed: float,
         attempt_elapsed: float,
         text_length: int,
+        probe: dict | None = None,
     ) -> None:
         super().__init__(str(cause))
         self.cause = cause
@@ -63,6 +84,7 @@ class _TTSSynthesisError(RuntimeError):
             total_elapsed=total_elapsed,
             attempt_elapsed=attempt_elapsed,
             text_length=text_length,
+            probe=probe,
         )
 
     def debug(self) -> dict:
@@ -83,14 +105,17 @@ def _debug_payload(
     total_elapsed: float,
     attempt_elapsed: float,
     text_length: int,
+    probe: dict | None = None,
 ) -> dict:
     """Everything useful for an incident, with credentials kept out.
 
     A connect timeout has no upstream request id because no task was started.
     The locally generated task id, endpoint and attempt count are then the only
-    things that can distinguish a bad host from a transient handshake.
+    things that can distinguish a bad host from a transient handshake. When the
+    timeout is reproducible, `upstream_probe` narrows it further to DNS, TCP or
+    TLS -- the difference between a wrong workspace id and a blocked route.
     """
-    return {
+    payload = {
         "operation": "tts.synthesize",
         "stage": stage,
         "type": type(exc).__name__,
@@ -108,6 +133,24 @@ def _debug_payload(
         "sdk_connect_timeout_seconds": SDK_CONNECT_TIMEOUT_SECONDS,
         "text_length": text_length,
     }
+    if probe is not None:
+        payload["upstream_probe"] = probe
+    return payload
+
+
+def _user_message(exc: BaseException) -> str:
+    """A short, actionable line for the card; the detail stays in `debug`.
+
+    The SDK's own text is English and mentions firewall settings when the real
+    cause is usually a cross-border route. Say what actually happened, in the
+    language the rest of the UI uses, and point at the retry button.
+    """
+    if isinstance(exc, _TTSSynthesisError) and _is_connect_timeout(exc.cause):
+        return (
+            f"连不上阿里云语音服务（连接超时，已试 {exc.attempts} 次）。"
+            "请稍后点「重新生成」；若持续出现，说明当前部署到上游的网络不通。"
+        )
+    return redact.scrub(exc)
 
 
 def _is_connect_timeout(exc: BaseException) -> bool:
@@ -135,7 +178,7 @@ def _close_quietly(synthesizer) -> None:
 
 
 async def _synthesize(websocket, loop, text: str, voice: str, params: dict) -> None:
-    attempts = TTS_CONNECT_RETRY_ATTEMPTS
+    attempts = max(1, config.TTS_CONNECT_ATTEMPTS)
     total_started = time.monotonic()
 
     for attempt in range(1, attempts + 1):
@@ -176,13 +219,17 @@ async def _synthesize(websocket, loop, text: str, voice: str, params: dict) -> N
             _close_quietly(synthesizer)
 
             if retrying:
+                delay = _retry_delay(attempt)
                 print(
                     f"[tts] upstream connect timed out "
-                    f"(attempt {attempt}/{attempts}); retrying in "
-                    f"{TTS_CONNECT_RETRY_DELAY_SECONDS:.1f}s"
+                    f"(attempt {attempt}/{attempts}); retrying in {delay:.2f}s"
                 )
-                await asyncio.sleep(TTS_CONNECT_RETRY_DELAY_SECONDS)
+                await asyncio.sleep(delay)
                 continue
+
+            # Last attempt failed on the connection itself: spend a bounded
+            # probe to say whether DNS, TCP or TLS is the broken stage.
+            probe = await _probe_endpoint(endpoint) if stage == "upstream_connect" else None
 
             raise _TTSSynthesisError(
                 exc,
@@ -197,6 +244,7 @@ async def _synthesize(websocket, loop, text: str, voice: str, params: dict) -> N
                 total_elapsed=time.monotonic() - total_started,
                 attempt_elapsed=attempt_elapsed,
                 text_length=len(text),
+                probe=probe,
             ) from exc
         finally:
             callback.cancel_pending()
@@ -209,7 +257,7 @@ async def _send_error(websocket, exc: BaseException, debug: dict) -> None:
                 {
                     "type": "error",
                     "error": {
-                        "message": redact.scrub(exc),
+                        "message": _user_message(exc),
                         "debug": debug,
                     },
                 },
@@ -282,7 +330,7 @@ async def handle(websocket: WebSocket) -> None:
             task_id="",
             request_id=None,
             attempt=0,
-            attempts=TTS_CONNECT_RETRY_ATTEMPTS,
+            attempts=config.TTS_CONNECT_ATTEMPTS,
             total_elapsed=0.0,
             attempt_elapsed=0.0,
             text_length=0,

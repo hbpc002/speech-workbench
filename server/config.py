@@ -159,6 +159,27 @@ TTS_MODEL = _env("TTS_MODEL", default="cosyvoice-v3-flash")
 TTS_VOICE = _env("TTS_VOICE", default="longanhuan")
 TTS_SAMPLE_RATE = 22050
 
+# WebSocket 连接重试。SDK 每次固定等 5 秒且不可配置，所以能调的只有"试几次、
+# 隔多久"。默认 3 次（原始一次 + 重试两次）、0.5s 起指数退避、封顶 2s，最坏
+# 约 16.5s —— 远低于 Vercel 的 300s 函数上限，又给了跨境线路两次纠错机会。
+# 只对连接超时重试：模型不存在、参数错误重试只会重复计费。
+TTS_CONNECT_ATTEMPTS = max(1, _env_int("TTS_CONNECT_ATTEMPTS", default=3))
+TTS_CONNECT_BACKOFF_SECONDS = max(
+    0.0, _env_float("TTS_CONNECT_BACKOFF_SECONDS", default=0.5)
+)
+TTS_CONNECT_BACKOFF_MAX_SECONDS = max(
+    0.0, _env_float("TTS_CONNECT_BACKOFF_MAX_SECONDS", default=2.0)
+)
+# 抖动避免多个句子/多个用户在同一毫秒重连。设为 0 可关掉。
+TTS_CONNECT_JITTER_SECONDS = max(
+    0.0, _env_float("TTS_CONNECT_JITTER_SECONDS", default=0.25)
+)
+# 连接失败后做一次主动探测，判定卡在 DNS / TCP / TLS 哪一段。只在失败路径
+# 执行，不增加正常合成的延迟。
+TTS_PROBE_TIMEOUT_SECONDS = max(
+    0.0, _env_float("TTS_PROBE_TIMEOUT_SECONDS", default=3.0)
+)
+
 REALTIME_VOICES = [
     "longanlingxin",
     "longanqian",
