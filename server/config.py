@@ -81,6 +81,11 @@ API_KEY = _env("DASHSCOPE_API_KEY", "REALTIME_API_KEY")
 
 # qwen-audio-3.0-* models are served from a per-workspace endpoint, see
 # samples/speech-recognition/recognize_speech_qwen-audio-3.0-asr-flash-streaming-with-vocabulary/python/run.py:49
+#
+# 现在百炼新签发的都是 `sk-ws-` 开头的业务空间 Key，对这把 Key 来说这个值是
+# **必填**而不是可选：实测语音合成和实时对话在公共端点和工作空间端点都通，但
+# 音色列表/复刻（VoiceEnrollmentService）只认工作空间端点，走
+# dashscope.aliyuncs.com 会返回 `ModelNotFound`。留空 = Tab 6 声音复刻整页不可用。
 WORKSPACE_ID = _env("DASHSCOPE_WORKSPACE_ID", "FUN_REALTIME_SPACE_ID")
 
 # Access password for the whole app. Empty disables authentication.
@@ -183,15 +188,23 @@ LLM_API_KEY = _env("LLM_API_KEY", default=API_KEY)
 
 # "id:显示名,id:显示名"，显示名只给前端下拉用，id 才是发给上游的。
 #
-# 默认是 qwen-flash 而不是 qwen-turbo：后者已被百炼列入下线批次（公告日 2026-10-10），
-# 而官方下线机制写明「下线公告发布后 QPM/TPM 会逐步下降」—— 症状就是用着用着突然
-# 429。qwen-flash 同属 Flash 档、标注这种活够用，限额反而宽出一个量级
-# （RPM 30000 / TPM 1000 万，对比 turbo 的 1200 / 500 万），单价也更低。
-# qwen-turbo 留在列表最后：还能用，但要清楚它随时会消失。
+# 默认只列实测能调通的模型，而且是两个 Flash 档的同代替代品。原因是百炼现在
+# 新签发的 Key（`sk-ws-` 开头的业务空间 Key）**带模型白名单**：不在名单里的模型
+# 不是 404「模型不存在」，而是 403 `AccessDenied: Access denied by API-Key
+# restrictions.`。实测同一把 Key 上 qwen3.8-flash / qwen3.7-flash 返回 200，
+# 而 qwen-flash / qwen-plus / qwen3.6-flash / qwen-max / deepseek-* / kimi-* /
+# glm-* 一律 403。所以列表里放一个调不通的 id，等于在前端下拉里摆一个点了就报错
+# 的选项 —— 拿不到权限的人只能在控制台改 LLM_MODELS 才可能用到别的模型。
+#
+# `GET /compatible-mode/v1/models` 不能用来判断可用性：它返回的是全站目录，
+# 不做 Key 的白名单过滤，看起来什么都有。
+#
+# 白名单在 百炼控制台 → API-KEY 管理 → 选中这把 Key 里配。放开之后把更多
+# `id:显示名` 追加到 LLM_MODELS 即可，前后端代码不用动。
 LLM_MODELS = _parse_models(
     _env(
         "LLM_MODELS",
-        default="qwen-flash:均衡,qwen3.8-flash:最新,qwen-plus:较强,qwen-turbo:旧版待下线",
+        default="qwen3.8-flash:均衡,qwen3.7-flash:备用",
     )
 )
 LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")

@@ -34,7 +34,7 @@ class WebSocketSynthCallback(ResultCallback):
         self.loop = loop
         self.finished = asyncio.Event()
         self.pending: list[asyncio.Future] = []
-        self._outcome = {"ok": True, "error": None}
+        self._outcome = {"ok": True, "error": None, "request_id": None}
 
     # -- control channel ---------------------------------------------------
 
@@ -61,10 +61,16 @@ class WebSocketSynthCallback(ResultCallback):
         self.finished.set()
 
     def on_error(self, message: str) -> None:
+        # Do not send here: the caller wraps this in a `_TTSSynthesisError`
+        # that can also carry the model, endpoint, task id and attempt count.
         detail = getattr(message, "message", str(message))
+        request_id = getattr(message, "request_id", None)
         print(f"[tts] upstream error: {detail}")
-        self._outcome = {"ok": False, "error": str(detail)}
-        self._send_text({"type": "error", "error": {"message": str(detail)}})
+        self._outcome = {
+            "ok": False,
+            "error": str(detail),
+            "request_id": str(request_id) if request_id else None,
+        }
         # Release the caller even on failure, otherwise it waits forever.
         self.finished.set()
 
@@ -83,6 +89,14 @@ class WebSocketSynthCallback(ResultCallback):
     @property
     def failed(self) -> bool:
         return not self._outcome["ok"]
+
+    @property
+    def error(self) -> str | None:
+        return self._outcome["error"]
+
+    @property
+    def request_id(self) -> str | None:
+        return self._outcome["request_id"]
 
     async def wait(self, timeout: float = 60.0) -> bool:
         try:

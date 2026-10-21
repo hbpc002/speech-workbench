@@ -67,7 +67,7 @@ cp .env.example .env      # 填入 DASHSCOPE_API_KEY
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/hbpc002/speech-workbench)
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new?repo=https://github.com/hbpc002/speech-workbench)
 
-点按钮后只需填 `DASHSCOPE_API_KEY`，平台会自动读仓库里的 `render.yaml` / `vercel.json` 完成其余配置。
+点按钮后填 `DASHSCOPE_API_KEY`，平台会自动读仓库里的 `render.yaml` / `vercel.json` 完成其余配置。声音复刻还要多填一个 `DASHSCOPE_WORKSPACE_ID`（`llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查）—— 百炼现在签发的 Key 都带 `sk-ws-` 前缀，复刻只认工作空间端点。
 
 <details>
 <summary>Docker / 自有服务器</summary>
@@ -128,7 +128,8 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 | `SESSION_SECRET` | 签名会话 Cookie |
 | `PUBLIC_BASE_URL` | 部署后的公网地址，`local` 存储（Render/Docker/本地）下声音复刻必填 |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 读写 token。在 Vercel 上把 Blob store 通过 **Connect to Project** 连到项目后自动注入，无需手动添加 |
-| `DASHSCOPE_WORKSPACE_ID` | 可选，工作空间专属模型才需要 |
+| `DASHSCOPE_WORKSPACE_ID` | `sk-ws-` 开头的业务空间 Key **必填**，否则声音复刻整页不可用（公共端点返回 `ModelNotFound`）。形如 `llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查 |
+| `LLM_MODELS` / `LLM_MODEL` | AI 标注/写稿的模型。百炼 Key 带模型白名单，不在名单里报 403 `AccessDenied` 而非 404；默认的两个是实测调得通的 |
 
 ## License
 

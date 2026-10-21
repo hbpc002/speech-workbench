@@ -40,6 +40,7 @@ import {
 } from '/static/js/audio.js';
 import { actionButton } from '/static/js/actions.js';
 import { api, applySocketStatus, el, log, state } from '/static/js/app.js';
+import { error as logError, info as logInfo } from '/static/js/debug_log.js';
 import { buildInstruction, instructionValues, isVoiceDependent } from '/static/js/instruct.js';
 import { CLONE_VOICE_KEY, applyRecent, loadRecent, localStore, rememberVoice, trackSelection } from '/static/js/recent.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
@@ -971,10 +972,24 @@ function ensureSocket() {
       }
       if (event.type === 'tts.done') finishPreview(null);
       else if (event.type === 'error') {
-        finishPreview(event.error?.message || '生成失败');
+        const message = event.error?.message || '生成失败';
+        // The card keeps the short line; the drawer keeps the endpoint, stage,
+        // task id and attempt count that make the failure actionable.
+        logError('WS /ws/tts 合成失败', { message, debug: event.error?.debug ?? null });
+        finishPreview(message);
       }
     },
-    onStatus: (raw) => applySocketStatus('voice-status', raw),
+    onStatus(raw) {
+      applySocketStatus('voice-status', raw);
+      logInfo(`WS /ws/tts ${raw}`);
+    },
+    onClose(info) {
+      const write = info.wasClean ? logInfo : logError;
+      write('WS /ws/tts 已关闭', info);
+    },
+    onError(info) {
+      logError('WS /ws/tts 连接错误', info);
+    },
   });
   previewSocket.open();
   return previewSocket;

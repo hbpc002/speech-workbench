@@ -285,4 +285,13 @@ describe('diagnostics', () => {
     assert.match(source, /command\(`\$\{method\} \$\{path\}`\)/);
     assert.match(source, /err\.debug = payload\.debug/);
   });
+
+  it('logs the TTS WebSocket error debug and close metadata', () => {
+    for (const name of ['tab_tts.js', 'tab_voice.js']) {
+      const source = readFileSync(join(JS_DIR, name), 'utf8');
+      assert.match(source, /event\.error\?\.debug/, `${name} drops the server debug payload`);
+      assert.match(source, /WS \/ws\/tts 合成失败/, `${name} does not log synthesis failures`);
+      assert.match(source, /onClose\(info\)/, `${name} does not log close details`);
+    }
+  });
 });

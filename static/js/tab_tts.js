@@ -21,6 +21,7 @@ import {
 } from '/static/js/audio.js';
 import { actionButton } from '/static/js/actions.js';
 import { applySocketStatus, el, state } from '/static/js/app.js';
+import { error as logError, info as logInfo } from '/static/js/debug_log.js';
 import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
@@ -475,11 +476,30 @@ function ensureSocket() {
       if (sentence) sentence.chunks.push(new Int16Array(buffer));
     },
     onMessage(raw) {
-      const event = JSON.parse(raw);
+      let event;
+      try {
+        event = JSON.parse(raw);
+      } catch (_) {
+        return;
+      }
       if (event.type === 'tts.done') finishCurrent(null);
-      else if (event.type === 'error') finishCurrent(event.error?.message || '生成失败', busyRecord && busyRecord.params);
+      else if (event.type === 'error') {
+        const message = event.error?.message || '生成失败';
+        logError('WS /ws/tts 合成失败', { message, debug: event.error?.debug ?? null });
+        finishCurrent(message, busyRecord && busyRecord.params);
+      }
     },
-    onStatus: (raw) => applySocketStatus('tts-status', raw),
+    onStatus(raw) {
+      applySocketStatus('tts-status', raw);
+      logInfo(`WS /ws/tts ${raw}`);
+    },
+    onClose(info) {
+      const write = info.wasClean ? logInfo : logError;
+      write('WS /ws/tts 已关闭', info);
+    },
+    onError(info) {
+      logError('WS /ws/tts 连接错误', info);
+    },
   });
   socket.open();
   return socket;

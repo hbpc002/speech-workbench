@@ -311,13 +311,14 @@ export class VoiceClipRecorder {
  * transcript to rebuild context.
  */
 export class ResilientSocket {
-  constructor(path, { onOpen, onMessage, onBinary, onClose, onStatus } = {}) {
+  constructor(path, { onOpen, onMessage, onBinary, onClose, onStatus, onError } = {}) {
     this.path = path;
     this.onOpen = onOpen || (() => {});
     this.onMessage = onMessage || (() => {});
     this.onBinary = onBinary || (() => {});
     this.onClose = onClose || (() => {});
     this.onStatus = onStatus || (() => {});
+    this.onError = onError || (() => {});
     this.socket = null;
     this.delay = 1000;
     this.wantOpen = false;
@@ -358,7 +359,12 @@ export class ResilientSocket {
       if (typeof event.data === 'string') this.onMessage(event.data);
       else this.onBinary(event.data);
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      this.onClose({
+        code: event?.code ?? null,
+        reason: event?.reason || '',
+        wasClean: event?.wasClean ?? false,
+      });
       if (!this.wantOpen) {
         this.onStatus('closed');
         return;
@@ -368,7 +374,10 @@ export class ResilientSocket {
       setTimeout(() => this._connect(), this.delay);
       this.delay = Math.min(this.delay * 2, 15000);
     };
-    socket.onerror = () => socket.close();
+    socket.onerror = (event) => {
+      this.onError({ type: event?.type || 'error' });
+      socket.close();
+    };
   }
 
   send(payload) {

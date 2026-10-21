@@ -9,6 +9,10 @@ services:
     envVars:
       - key: DASHSCOPE_API_KEY
         sync: false
+      # Not optional for the `sk-ws-` keys Bailian issues today: voice
+      # enrollment answers `ModelNotFound` against the public endpoint, so an
+      # empty value silently costs the whole voice-clone tab. `llm-xxxxxxxx`,
+      # from 业务空间 -> 业务空间详情.
       - key: DASHSCOPE_WORKSPACE_ID
         sync: false
       - key: FUN_REALTIME_SPACE_ID
@@ -22,3 +26,11 @@ services:
         sync: false
       - key: STORAGE_BACKEND
         value: local
+      # Bailian keys carry a model allowlist, and a denied model fails with
+      # 403 `Access denied by API-Key restrictions.` rather than a 404. These
+      # two are the ids verified to answer 200 on such a key; widen them only
+      # after adding the model to the key in 百炼控制台 -> API-KEY 管理.
+      - key: LLM_MODELS
+        value: qwen3.8-flash:均衡,qwen3.7-flash:备用
+      - key: LLM_MODEL
+        value: qwen3.8-flash
