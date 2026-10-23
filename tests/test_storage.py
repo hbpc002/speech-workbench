@@ -432,3 +432,89 @@ class TestPurge:
         os.makedirs(storage.MEDIA_DIR, exist_ok=True)
         storage.purge_local()
         assert os.path.isdir(storage.MEDIA_DIR)
+
+class TestPutR2:
+    """R2 is Cloudflare's object store, used when STORAGE_BACKEND=r2.
+
+    The bucket is a runtime binding injected per request; these cases use a fake
+    bucket and assert only on the call convention and the returned public URL.
+    """
+
+    def _inject_fake_bucket(self, monkeypatch, recorder):
+        class FakeBucket:
+            async def put(self, key, body):
+                recorder["key"] = key
+                recorder["body"] = body
+
+        bucket = FakeBucket()
+        monkeypatch.setattr(storage, "_r2_bucket", bucket)
+        return bucket
+
+    def test_uploads_to_the_injected_bucket_and_returns_public_url(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(
+            config, "R2_PUBLIC_BUCKET_URL", "https://pub.example.r2.dev"
+        )
+        recorder = {}
+        self._inject_fake_bucket(monkeypatch, recorder)
+
+        url = run(storage.put(b"RIFFfake", ".wav"))
+
+        assert url.startswith("https://pub.example.r2.dev/")
+        name = url.rsplit("/", 1)[-1]
+        assert name.endswith(".wav")
+        assert recorder["body"] == b"RIFFfake"
+        assert recorder["key"] == name
+
+    def test_missing_public_url_raises_chinese_error(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(config, "R2_PUBLIC_BUCKET_URL", "")
+        monkeypatch.setattr(storage, "_r2_bucket", object())
+        with pytest.raises(RuntimeError) as excinfo:
+            run(storage.put(b"a", ".wav"))
+        assert "R2_PUBLIC_BUCKET_URL" in str(excinfo.value)
+
+    def test_missing_binding_raises_chinese_error(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(
+            config, "R2_PUBLIC_BUCKET_URL", "https://pub.example.r2.dev"
+        )
+        monkeypatch.setattr(storage, "_r2_bucket", None)
+        with pytest.raises(RuntimeError) as excinfo:
+            run(storage.put(b"a", ".wav"))
+        assert "bucket" in str(excinfo.value)
+
+    def test_binding_is_reset_by_default_between_tests(self, monkeypatch):
+        # The holder is module-global; an injected bucket must not leak into a
+        # later test that did not ask for one.
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(
+            config, "R2_PUBLIC_BUCKET_URL", "https://pub.example.r2.dev"
+        )
+        monkeypatch.setattr(storage, "_r2_bucket", None)
+        with pytest.raises(RuntimeError):
+            run(storage.put(b"a", ".wav"))
+        assert storage.get_r2_bucket() is None
+
+
+class TestR2Check:
+    def test_r2_with_a_public_origin_is_healthy(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(
+            config, "R2_PUBLIC_BUCKET_URL", "https://pub.example.r2.dev"
+        )
+        assert storage.check() is None
+
+    def test_r2_without_a_public_origin_is_reported(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(config, "R2_PUBLIC_BUCKET_URL", "")
+        problem = storage.check()
+        assert "R2_PUBLIC_BUCKET_URL" in problem
+
+    def test_r2_loopback_origin_is_reported(self, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_BACKEND", "r2")
+        monkeypatch.setattr(config, "R2_PUBLIC_BUCKET_URL", "http://localhost:8080")
+        assert storage.check() and "公网" in storage.check()
+

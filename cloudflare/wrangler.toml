@@ -1,0 +1,36 @@
+# Cloudflare Workers configuration for 语音工坊.
+#
+# Deploy with pywrangler:  uv run pywrangler deploy
+# (see README.md in this directory).
+#
+# IMPORTANT: this config targets the *REST + static* surface. The three /ws/*
+# realtime endpoints are NOT wired up yet -- see docs/部署到 Cloudflare.md for the
+# WebSocket rewrite you need before the voice tabs work here.
+
+name = "speech-workbench"
+main = "src/worker.py"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["python_workers"]
+
+# Voice-clone enrollment audio is uploaded to this bucket and served back to
+# DashScope over the public internet. The bucket must be reachable anonymously:
+# either give it a custom domain (preferred) or set it Public on r2.dev, and point
+# R2_PUBLIC_BUCKET_URL at that origin.
+[[r2_buckets]]
+binding = "SPEECH_MEDIA"
+bucket_name = "speech-workbench-media"
+
+# Runtime settings are plain vars for code, secrets for credentials.
+[vars]
+STORAGE_BACKEND = "r2"
+# e.g. "https://media.example.com" (custom domain) or
+# "https://pub-xxxxxxxx.r2.dev" (public r2.dev bucket). No trailing slash.
+# R2_PUBLIC_BUCKET_URL = "https://media.example.com"
+TTS_CONNECT_ATTEMPTS = "3"
+
+# Credentials: put the actual values in `wrangler secret put <name>`, or in the
+# dashboard (Workers -> your worker -> Settings -> Variables and Secrets).
+# DASHSCOPE_API_KEY
+# DASHSCOPE_WORKSPACE_ID
+# APP_PASSWORD
+# SESSION_SECRET

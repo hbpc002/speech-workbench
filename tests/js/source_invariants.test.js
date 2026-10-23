@@ -255,6 +255,21 @@ describe('voice enrollment', () => {
     assert.doesNotMatch(source, /refreshVoices\(\{ force: true, ensureVoice: entry \}\)/);
     assert.match(source, /requestSeq !== voiceListRequestSeq/);
   });
+
+  it('auto-names a fresh clone so siblings are distinguishable', () => {
+    // Bare upstream ids share a minute-granular prefix, so two clones made in
+    // the same minute look identical in the list. The clone flow must attach a
+    // readable local alias immediately -- a typed name or a time-based one.
+    const source = readFileSync(join(JS_DIR, 'tab_voice.js'), 'utf8');
+    assert.match(source, /aliasInput \|\| autoAliasFor/);
+    assert.match(source, /setVoiceMeta\(voiceId, \{ alias \}\)/);
+    assert.match(source, /voice-alias/);
+  });
+
+  it('lets the operator name a voice as they record the sample', () => {
+    const html = readFileSync(join(JS_DIR, '..', 'index.html'), 'utf8');
+    assert.match(html, /id="voice-alias"/);
+  });
 });
 
 describe('diagnostics', () => {

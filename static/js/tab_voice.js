@@ -150,6 +150,25 @@ function labelFor(voiceId) {
   return alias || voiceId;
 }
 
+/**
+ * Auto-generate a readable local alias for a freshly cloned voice, e.g. "复刻 07:31:12".
+ *
+ * The bare upstream id is opaque (a minute-granular prefix plus a hash), so two
+ * clones made in the same minute are indistinguishable. Naming by the time to the
+ * second at least tells the two apart; if a later clone lands in the same second
+ * (or the user already has that name), append a counter.
+ */
+function autoAliasFor(existingAliases = new Set()) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const base = `复刻 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  let name = base;
+  for (let n = 2; existingAliases.has(name); n++) {
+    name = `${base} #${n}`;
+  }
+  return name;
+}
+
 function tagsFor(voiceId) {
   return voiceMeta.get(voiceId)?.tags || [];
 }
@@ -578,8 +597,10 @@ function renderVoiceList(list, { stale = false, fromCache = false, fetchedAt = 0
       row.className = 'voice-row';
 
       const label = document.createElement('span');
-      label.className = 'voice-id';
       const alias = voiceMeta.get(voiceId)?.alias;
+      // An aliased voice is a name, not an opaque id: render it in the readable
+      // body font and keep the monospace for the real id underneath.
+      label.className = 'voice-id' + (alias ? ' has-alias' : '');
       label.textContent = alias || voiceId;
       if (alias) {
         const real = document.createElement('span');
@@ -762,6 +783,9 @@ async function clone() {
   }
   const prefix = el('voice-prefix').value.trim();
   const targetModel = el('voice-model').value;
+  // The operator can name the clone as they record it; a blank name becomes a
+  // time-based auto alias so the voice is distinguishable from its siblings.
+  const aliasInput = el('voice-alias').value.trim();
   const startedAt = Date.now();
   const base = { prefix, model: targetModel, seconds: clipStats?.stats?.seconds ?? null };
 
@@ -781,8 +805,16 @@ async function clone() {
       body: form,
       signal: controller.signal,
     });
-    log('voice-status', `复刻成功：${voiceId}`, 'system');
     await recordClone({ ...base, voiceId, ok: true, elapsed: Date.now() - startedAt });
+    // Give the fresh clone a readable local name right away. Without this the
+    // list shows the bare opaque id, and two clones made in the same minute are
+    // indistinguishable.
+    const usedAliases = new Set(
+      [...voiceMeta.values()].map((m) => (m.alias || '').trim()).filter(Boolean)
+    );
+    const alias = aliasInput || autoAliasFor(usedAliases);
+    await setVoiceMeta(voiceId, { alias });
+    log('voice-status', `复刻成功：${voiceId}（已命名为「${alias}」）`, 'system');
     const entry = {
       voice_id: voiceId,
       target_model: targetModel,
@@ -1224,7 +1256,9 @@ function renderCloneLog() {
     meta.className = 'hmeta';
     const title = document.createElement('div');
     title.className = 'htitle';
-    title.textContent = record.ok ? (record.voiceId || record.action) : `${record.prefix || ''} 复刻失败`;
+    title.textContent = record.ok
+      ? labelFor(record.voiceId || record.action)
+      : `${record.prefix || ''} 复刻失败`;
     title.title = title.textContent;
     const sub = document.createElement('div');
     sub.className = 'hsub';

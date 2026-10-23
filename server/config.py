@@ -118,6 +118,12 @@ BLOB_TOKEN = _env("BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_READ_WRITE_TOKEN")
 # actually works -- server/storage.py check() is what verifies that.
 STORAGE_BACKEND = _env("STORAGE_BACKEND", default="auto")
 
+# Cloudflare R2 的公网回源地址。只有 STORAGE_BACKEND=r2 时用：阿里云要能从公网
+# 下载复刻样本，所以这个地址必须是 R2 bucket 绑了自定义域、或设为 Public 后的
+# 公开 https 地址（不带尾部斜杠）。bucket 绑定本身是运行时对象，由 Cloudflare
+# worker 入口按请求注入，不经过这里（见 server/storage.py 的 set_r2_bucket）。
+R2_PUBLIC_BUCKET_URL = _env("R2_PUBLIC_BUCKET_URL", default="").rstrip("/")
+
 VOICE_CLONE_MODELS = [
     "cosyvoice-v3-flash",
     "qwen-audio-3.0-tts-flash",

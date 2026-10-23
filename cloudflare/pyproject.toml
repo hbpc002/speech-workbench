@@ -1,0 +1,15 @@
+[project]
+name = "speech-workbench-cloudflare"
+version = "1.0.0"
+description = "Cloudflare Python Worker entrypoint for speech-workbench"
+requires-python = ">=3.13"
+# FastAPI is pinned below 0.142 to match the reference template's compatibility.
+dependencies = [
+    "fastapi<0.142",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+]

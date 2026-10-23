@@ -879,6 +879,15 @@ p.hint {
   .spinner { animation: none; border-top-color: var(--accent); }
 }
 
+/* An aliased voice is a name; the readable body font beats monospace for
+   CJK labels, while the real id underneath stays monospace. */
+.voice-row .voice-id.has-alias {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.voice-row .voice-id.has-alias .voice-real-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 /* Shown next to an alias, so the real id is always recoverable. */
 .voice-real-id {
   font-size: 11px;

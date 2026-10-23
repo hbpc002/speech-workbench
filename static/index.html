@@ -230,7 +230,8 @@
     <section class="panel" data-panel="voice">
       <div class="controls">
         <label>目标模型 <select id="voice-model"></select></label>
-        <label>前缀 <input id="voice-prefix" type="text" value="" placeholder="如 10201530" maxlength="9"></label>
+        <label>前缀 <input id="voice-prefix" type="text" value="" placeholder="如 10201530" maxlength="9" title="复刻前缀，会拼进音色 id（仅小写字母数字，≤9 位）"></label>
+        <label class="grow">音色名称 <input id="voice-alias" type="text" value="" placeholder="留空则按复刻时间自动命名，如 复刻 07:31:12" maxlength="40"></label>
         <span class="status" id="voice-status"></span>
       </div>
 

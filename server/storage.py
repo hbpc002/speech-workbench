@@ -54,6 +54,8 @@ def check() -> str | None:
     """
     if backend() == "blob":
         return _check_blob()
+    if backend() == "r2":
+        return _check_r2()
     return _check_local()
 
 
@@ -93,6 +95,37 @@ _PRIVATE_STORE = (
 )
 
 
+# Cloudflare R2 后端（声音复刻在 Cloudflare Workers 上的存储路径）。
+#
+# 和 local/blob 不同，R2 的 bucket 句柄是运行时对象：Cloudflare 在 Worker 的
+# env 绑定里塞进来（request.scope["env"]），只有请求在处理时才有。为了让
+# storage.put 保持「不感知请求」的签名，worker 入口在进路由前用
+# set_r2_bucket() 把它注入到这个模块级句柄，路由里的 put() 再从 get_r2_bucket()
+# 取。测试直接往这个句柄塞一个假 bucket 即可，不碰真实绑定。
+_r2_bucket = None  # 由 Cloudflare worker 入口按请求注入；local/blob 后端忽略
+
+_NO_R2_PUBLIC_URL = (
+    "选择了 r2 存储但没有 R2_PUBLIC_BUCKET_URL。阿里云要从公网下载这段复刻样本，"
+    "请给 R2 bucket 绑一个自定义域，或在 Workers 控制台把 bucket 设为 Public，"
+    "然后把这个公网地址填进 R2_PUBLIC_BUCKET_URL（不带尾部斜杠）。"
+)
+_NO_R2_BINDING = (
+    "选择了 r2 存储但当前请求没有可用的 R2 bucket 绑定。请确认 wrangler 配置里"
+    "绑定了 bucket（见 cloudflare/wrangler.toml 的 r2_buckets），且部署后重新启动。"
+)
+
+
+def set_r2_bucket(bucket) -> None:
+    """给后续请求注入 R2 bucket 绑定（由 Cloudflare worker 入口调用）。"""
+    global _r2_bucket
+    _r2_bucket = bucket
+
+
+def get_r2_bucket():
+    """取当前请求的 R2 bucket 绑定。未注入时返回 None。"""
+    return _r2_bucket
+
+
 def _is_private_store_error(exc: BaseException) -> bool:
     """识别「往私有 store 传了 public」。
 
@@ -128,11 +161,27 @@ def _check_blob() -> str | None:
         return _NO_BLOB_TOKEN
     return None
 
+def _check_r2() -> str | None:
+    # bucket 绑定是运行时对象，自检阶段（启动时）没有请求上下文，拿不到它。所以
+    # 这里只查能离线判断的部分 —— 公网回源地址 —— 并把绑定缺失留给上传那一刻，
+    # 由 _put_r2 用同一句文案报出来。
+    base = config.R2_PUBLIC_BUCKET_URL
+    if not base:
+        return _NO_R2_PUBLIC_URL
+    host = base.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if host in _LOOPBACK_HOSTS:
+        return (
+            f"R2_PUBLIC_BUCKET_URL 指向 {host}，阿里云从公网访问不到，声音复刻会失败。"
+        )
+    return None
+
 
 async def put(wav_bytes: bytes, suffix: str = ".wav") -> str:
     """Store the clip and return a URL DashScope can fetch."""
     if backend() == "blob":
         return await _put_blob(wav_bytes, suffix)
+    if backend() == "r2":
+        return await _put_r2(wav_bytes, suffix)
     return _put_local(wav_bytes, suffix)
 
 
@@ -180,6 +229,25 @@ async def _put_blob(wav_bytes: bytes, suffix: str) -> str:
     if not result.url:
         raise RuntimeError("Vercel Blob 上传成功，但没有返回可下载的 url。")
     return result.url
+
+async def _put_r2(wav_bytes: bytes, suffix: str) -> str:
+    """Upload the clip to R2 and return a public URL DashScope can fetch.
+
+    The bucket is a runtime binding, injected per-request by the worker entrypoint
+    (see set_r2_bucket). local/blob callers never reach here.
+    """
+    bucket = get_r2_bucket()
+    if bucket is None:
+        raise RuntimeError(_NO_R2_BINDING)
+    base = config.R2_PUBLIC_BUCKET_URL
+    if not base:
+        raise RuntimeError(_NO_R2_PUBLIC_URL)
+    name = uuid.uuid4().hex + suffix
+    try:
+        await bucket.put(name, wav_bytes)
+    except Exception as exc:  # noqa: BLE001 - surfaced as-is to the browser
+        raise RuntimeError(f"上传到 Cloudflare R2 失败：{exc}") from exc
+    return f"{base}/{name}"
 
 
 def read_local(name: str) -> bytes | None:

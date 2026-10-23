@@ -102,7 +102,10 @@ class TestPublicConfig:
         # being filtered.
         payload = config.public_config()
         assert config.LLM_API_KEY not in repr(payload)
-        assert config.API_KEY not in repr(payload) or not config.API_KEY
+        # Guard on the key being set *before* the membership check: when
+        # config.API_KEY is None (no .env), `None not in "..."` raises
+        # TypeError before `or` gets a chance to short-circuit.
+        assert not config.API_KEY or config.API_KEY not in repr(payload)
 
     def test_never_contains_the_base_url(self):
         # /healthz is unauthenticated and a self-hosted vLLM origin is not

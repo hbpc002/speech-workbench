@@ -90,6 +90,8 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 
 部署细节（Render 免费版 5GB/月带宽、Vercel 区域选择等）见 [`docs/技术说明.md`](docs/技术说明.md#部署)。
 
+想在 **Cloudflare Workers** 上跑？可行，但需要一次 WebSocket 层改写，可行性分析与脚手架见 [`docs/部署到 Cloudflare.md`](docs/部署到%20Cloudflare.md) 和 [`cloudflare/`](cloudflare/)。
+
 ---
 
 ## 文档
