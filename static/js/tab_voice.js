@@ -49,6 +49,7 @@ import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } f
 import { MAX_SECONDS, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 import { hydrateVoiceAliases, rememberAlias } from '/static/js/voice_aliases.js';
+import { initVideoDialog, openVideoDialog } from '/static/js/video_dialog.js';
 import { MAX_NAME, autoNameRows, createdMsOf, idOf, parseNames, serializeNames, visibleRows } from '/static/js/voice_view.js';
 import { voicePrefixFor } from '/static/js/voice_prefix.js';
 
@@ -342,6 +343,19 @@ function secondsOf(chunks, sampleRate = state.config.tts_sample_rate) {
   let total = 0;
   for (const chunk of chunks) total += chunk.length;
   return total / sampleRate;
+}
+
+/**
+ * A preview record as the video dialog wants it.
+ *
+ * The clone tab keeps one flat `chunks` list rather than the synthesis tab's
+ * per-sentence records, so there is exactly one "sentence" here. Passing the
+ * raw chunks through would work for the audio but leaves the dialog with no
+ * sentence text to caption, and an uncaptioned video is not what the button
+ * promises.
+ */
+function previewSentences(record) {
+  return [{ text: record.text, pcm: mergeChunks(record.chunks || []) }];
 }
 
 // ---- enrollment clip -------------------------------------------------------
@@ -1353,6 +1367,17 @@ function renderHistory() {
     actions.append(
       actionButton('播放', { onClick: () => playRecord(record), disabled: !record.chunks.length || busy }),
       actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: !record.chunks.length || busy }),
+      actionButton('生成视频', {
+        // Sample rate comes from runtime config, not the dialog's default: the
+        // clone tab records at whatever the server advertises, and a mismatch
+        // would stretch every caption.
+        onClick: () => openVideoDialog({
+          text: record.text,
+          sentences: previewSentences(record),
+          sampleRate: state.config.tts_sample_rate,
+        }),
+        disabled: !record.chunks.length || busy,
+      }),
       actionButton('重新生成', { onClick: () => regenerate(record), disabled: busy }),
       actionButton('删除', { className: 'ghost danger', onClick: () => removePreview(record) })
     );
@@ -1623,6 +1648,7 @@ export function init() {
   renderHistory();
   renderCloneLog();
   checkCloneReadiness();
+  initVideoDialog();
 }
 
 /**

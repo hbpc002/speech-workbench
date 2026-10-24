@@ -37,21 +37,31 @@ export function presetOf(id) {
 }
 
 /**
- * Seconds of audio in one sentence.
+ * Sample count of one sentence's PCM, or 0 when there is nothing usable.
  *
- * `pcm` is base64 of little-endian 16-bit mono, which is what the TTS tab
- * stores, so the length is bytes / 2 / sampleRate. Reading `pcm.length` as a
- * number of samples instead would understate every cue by half.
+ * The TTS tab stores `Int16Array` (IndexedDB structured-clones it); a base64
+ * string is accepted too because that is what the unit fixtures build, and the
+ * two are cheap to tell apart. Treating the sample count as a byte count halves
+ * every caption, which is the mistake this function exists to prevent.
  */
+function samplesOf(pcm) {
+  if (!pcm) return 0;
+  if (typeof pcm === 'string') {
+    // Base64 encodes 3 bytes per 4 characters, minus padding.
+    const padding = pcm.endsWith('==') ? 2 : pcm.endsWith('=') ? 1 : 0;
+    if (!pcm.length) return 0;
+    return Math.max(0, Math.floor((pcm.length * 3) / 4) - padding) / 2;
+  }
+  // Typed arrays carry the sample count directly; the earlier version read
+  // `.length` off a string only, so a real record threw
+  // `pcm.endsWith is not a function` and the dialog never opened.
+  return typeof pcm.length === 'number' ? pcm.length : 0;
+}
+
+/** Seconds of audio in one sentence. */
 export function secondsOfPcm(pcm, sampleRate = 22050) {
-  if (!pcm || !sampleRate) return 0;
-  // Base64 encodes 3 bytes per 4 characters, minus padding. `Buffer` is not
-  // available in the browser, so the length is computed rather than decoded.
-  const chars = String(pcm).length;
-  if (!chars) return 0;
-  const padding = pcm.endsWith('==') ? 2 : pcm.endsWith('=') ? 1 : 0;
-  const bytes = Math.floor((chars * 3) / 4) - padding;
-  return Math.max(0, bytes / 2 / sampleRate);
+  if (!sampleRate) return 0;
+  return Math.max(0, samplesOf(pcm) / sampleRate);
 }
 
 /**

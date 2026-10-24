@@ -24,9 +24,20 @@ import {
   splitForCaptions,
 } from '../../static/js/video_timeline.js';
 
-/** Base64 for `seconds` of silence at `rate`, which is what the TTS tab stores. */
+/**
+ * Base64 for `seconds` of silence at `rate`.
+ *
+ * The TTS tab actually stores `Int16Array`, which is covered separately; this
+ * stays because the base64 path is still accepted and was the only one tested
+ * when the dialog shipped dead.
+ */
 function pcmOf(seconds, rate = 22050) {
   return Buffer.alloc(Math.round(seconds * rate) * 2).toString('base64');
+}
+
+/** What a real record holds: the typed array IndexedDB hands back. */
+function samplesOf(seconds, rate = 22050) {
+  return new Int16Array(Math.round(seconds * rate));
 }
 
 describe('secondsOfPcm', () => {
@@ -34,6 +45,14 @@ describe('secondsOfPcm', () => {
     // 22050 samples of 16-bit mono is one second. Treating the string length
     // as a sample count would report half a second and halve every caption.
     assert.equal(secondsOfPcm(pcmOf(1)), 1);
+  });
+
+  it('reads an Int16Array record without throwing', () => {
+    // Regression: the first implementation called `pcm.endsWith`, which only
+    // exists on strings. Every real record is an Int16Array, so opening the
+    // dialog threw before `showModal()` and the button looked dead.
+    assert.equal(secondsOfPcm(samplesOf(1)), 1);
+    assert.equal(secondsOfPcm(samplesOf(2, 24000), 24000), 2);
   });
 
   it('scales with the sample rate', () => {
@@ -162,6 +181,18 @@ describe('buildTimeline', () => {
       [
         { text: '第一句。', pcm: pcmOf(1) },
         { text: '第二句。', pcm: pcmOf(2) },
+      ],
+      22050
+    );
+    assert.equal(timeline.duration, 3);
+    assert.equal(timeline.cues.at(-1).end, 3);
+  });
+
+  it('sums an Int16Array record, which is what the tab actually stores', () => {
+    const timeline = buildTimeline(
+      [
+        { text: '第一句。', pcm: samplesOf(1) },
+        { text: '第二句。', pcm: samplesOf(2) },
       ],
       22050
     );

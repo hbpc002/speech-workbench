@@ -15,7 +15,7 @@
 //     are drawn to match the audio that is actually playing, so a stutter shows
 //     up as a repeated frame rather than as captions drifting out of sync.
 
-import { FPS, pickMimeType } from '/static/js/video_timeline.js';
+import { FPS, pickMimeType } from './video_timeline.js';
 
 /** Palette, mirrored from the stylesheet's custom properties. */
 const COLORS = {
@@ -145,22 +145,31 @@ export function cueAt(cues, seconds) {
   return null;
 }
 
-/** Concatenate base64 PCM chunks into one Int16Array, in reading order. */
+/**
+ * Concatenate PCM chunks into one Int16Array, in reading order.
+ *
+ * Accepts the two shapes that reach this function: the `Int16Array` the TTS tab
+ * stores, and base64 strings. `atob` on a typed array throws `InvalidCharacterError`,
+ * which used to surface as "录制失败" only after the dialog had already opened.
+ */
 export function joinPcm(chunks) {
-  let total = 0;
-  const decoded = chunks.map((chunk) => {
+  const rows = (chunks || []).filter(Boolean);
+  const decoded = rows.map((chunk) => {
+    if (typeof chunk !== 'string') {
+      return chunk instanceof Int16Array ? chunk : new Int16Array(chunk);
+    }
     const binary = atob(chunk);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    total += bytes.length / 2;
     return new Int16Array(bytes.buffer);
   });
 
+  const total = decoded.reduce((sum, row) => sum + row.length, 0);
   const out = new Int16Array(total);
   let offset = 0;
-  for (const chunk of decoded) {
-    out.set(chunk, offset);
-    offset += chunk.length;
+  for (const row of decoded) {
+    out.set(row, offset);
+    offset += row.length;
   }
   return out;
 }
