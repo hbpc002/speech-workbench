@@ -22,6 +22,9 @@ import {
   presetOf,
   secondsOfPcm,
   splitForCaptions,
+  activeTokenIndex,
+  buildTokens,
+  tokensRevealed,
 } from '../../static/js/video_timeline.js';
 
 /**
@@ -301,5 +304,83 @@ describe('pickMimeType', () => {
     assert.equal(extensionOf('video/webm;codecs=vp9,opus'), 'webm');
     assert.equal(extensionOf('video/mp4'), 'mp4');
     assert.equal(extensionOf(''), 'webm');
+  });
+});
+
+describe('buildTokens', () => {
+  it('gives every token a slice of the cue, in order', () => {
+    const tokens = buildTokens('你好世界', 0, 4);
+    assert.deepEqual(tokens.map((t) => t.word), ['你', '好', '世', '界']);
+    assert.equal(tokens[0].start, 0);
+    assert.equal(tokens.at(-1).end, 4);
+  });
+
+  it('keeps the tokens contiguous, so no sample of the cue is unreachable', () => {
+    // A gap between tokens is time where karaoke highlights nothing mid-word.
+    const tokens = buildTokens('第一句和第二句', 1, 4);
+    for (let i = 1; i < tokens.length; i++) {
+      assert.equal(tokens[i].start, tokens[i - 1].end, JSON.stringify(tokens));
+    }
+  });
+
+  it('gives a long Latin word more time than a single CJK character', () => {
+    const tokens = buildTokens('a international', 0, 10);
+    const a = tokens.find((t) => t.word === 'a');
+    const word = tokens.find((t) => t.word === 'international');
+    assert.ok(word.end - word.start > a.end - a.start);
+  });
+
+  it('keeps a Latin run as one token instead of splitting per character', () => {
+    // Splitting per character would make the highlight flicker across "hello".
+    assert.deepEqual(buildTokens('hello world', 0, 2).map((t) => t.word), ['hello', 'world']);
+  });
+
+  it('produces nothing for text with no visible characters', () => {
+    assert.deepEqual(buildTokens('', 0, 1), []);
+    assert.deepEqual(buildTokens('   ', 0, 1), []);
+    assert.deepEqual(buildTokens(null, 0, 1), []);
+  });
+
+  it('survives a zero-length cue without dividing by zero', () => {
+    const tokens = buildTokens('甲乙', 2, 2);
+    assert.equal(tokens.length, 2);
+    for (const token of tokens) assert.equal(token.start, 2);
+  });
+});
+
+describe('activeTokenIndex', () => {
+  const tokens = buildTokens('甲乙丙', 0, 3);
+
+  it('finds the token being spoken', () => {
+    assert.equal(activeTokenIndex(tokens, 0.5), 0);
+    assert.equal(activeTokenIndex(tokens, 1.5), 1);
+    assert.equal(activeTokenIndex(tokens, 2.9), 2);
+  });
+
+  it('reports -1 outside the cue rather than clamping to an end token', () => {
+    // Clamping would leave the last character highlighted during the pause
+    // after the sentence.
+    assert.equal(activeTokenIndex(tokens, -1), -1);
+    assert.equal(activeTokenIndex(tokens, 3.5), -1);
+    assert.equal(activeTokenIndex([], 0), -1);
+    assert.equal(activeTokenIndex(null, 0), -1);
+  });
+});
+
+describe('tokensRevealed', () => {
+  const tokens = buildTokens('中文测试', 0, 4);
+
+  it('reveals up to the active token', () => {
+    assert.equal(tokensRevealed(tokens, 0.5), '中');
+    assert.equal(tokensRevealed(tokens, 2.5), '中文测');
+  });
+
+  it('reveals nothing before the cue starts', () => {
+    assert.equal(tokensRevealed(tokens, -1), '');
+  });
+
+  it('reveals the whole line once the cue is over', () => {
+    // Word-by-word must not leave the last character permanently hidden.
+    assert.equal(tokensRevealed(tokens, 9), '中文测试');
   });
 });

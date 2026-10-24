@@ -141,11 +141,16 @@ export function buildCues(sentenceTexts, sentenceSeconds, {
       if (!buffer) return;
       const start = bufferStart;
       const end = Math.max(endAt, start + MIN_CUE_SECONDS);
+      // Tokens are derived, never passed in: `buildTokens` is the single place
+      // that knows how a cue's text maps onto its own span, and the renderer
+      // reads them for the karaoke styles.
+      const tokens = buildTokens(buffer, start, end);
       cues.push({
         index: cues.length + 1,
         start: round(start),
         end: round(end),
         text: buffer,
+        words: tokens,
       });
       buffer = '';
       bufferChars = 0;
@@ -186,6 +191,67 @@ function needsSpace(left, right) {
 /** Captions are compared and rendered at millisecond precision. */
 function round(value) {
   return Math.round(value * 1000) / 1000;
+}
+
+/**
+ * Break one cue's text into timed tokens.
+ *
+ * Follows openmontage's `subtitle_gen` cue shape: a cue carries its own
+ * `words: [{ word, start, end }]`, which is what `karaoke` and `word_by_word`
+ * render from. There are no real word timings here -- the synthesis API returns
+ * one audio blob per sentence -- so each token gets a share of the cue
+ * proportional to its length. That keeps the highlight roughly in step; it is
+ * an approximation, not a transcript alignment, and calling it anything else
+ * would set the wrong expectation.
+ *
+ * CJK has no spaces, so a "word" is one character there unless the text is
+ * Latin, where a run of letters is one word. Splitting CJK into multi-character
+ * tokens would make the highlight jump in chunks larger than the eye reads.
+ */
+export function buildTokens(text, start, end) {
+  const value = String(text || '');
+  if (!value.trim()) return [];
+
+  // Latin runs stay whole; every other visible character is its own token.
+  const parts = value.match(/[A-Za-z0-9'’\-]+|\s+|[^\s]/g) || [];
+  const tokens = parts.filter((part) => part.trim());
+
+  const total = tokens.reduce((sum, token) => sum + token.length, 0) || 1;
+  const span = Math.max(0, end - start);
+  let clock = start;
+
+  return tokens.map((token) => {
+    const width = (token.length / total) * span;
+    const tokenStart = clock;
+    clock += width;
+    return { word: token, start: round(tokenStart), end: round(clock) };
+  });
+}
+
+/**
+ * Index of the token being spoken at `seconds`.
+ *
+ * Returns -1 when the clock is outside the cue. The renderer uses -1 to mean
+ * "highlight nothing" rather than clamping to a token, because clamping flashes
+ * the last word during the pause after a sentence.
+ */
+export function activeTokenIndex(tokens, seconds) {
+  for (let i = 0; i < (tokens || []).length; i++) {
+    const token = tokens[i];
+    if (seconds >= token.start && seconds < token.end) return i;
+  }
+  return -1;
+}
+
+/** The tokens up to and including the active one, for `word_by_word`. */
+export function tokensRevealed(tokens, seconds) {
+  const index = activeTokenIndex(tokens, seconds);
+  if (index < 0) {
+    // Before the first token starts, show nothing; after the last, show all.
+    const last = (tokens || [])[(tokens || []).length - 1];
+    return last && seconds >= last.end ? (tokens || []).map((t) => t.word).join('') : '';
+  }
+  return (tokens || []).slice(0, index + 1).map((t) => t.word).join('');
 }
 
 /**

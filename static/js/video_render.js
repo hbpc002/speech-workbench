@@ -15,24 +15,24 @@
 //     are drawn to match the audio that is actually playing, so a stutter shows
 //     up as a repeated frame rather than as captions drifting out of sync.
 
-import { FPS, pickMimeType } from './video_timeline.js';
+import { FPS, activeTokenIndex, pickMimeType, tokensRevealed } from './video_timeline.js';
+import { DEFAULT_THEME, captionAnchorY, normalizeOptions, themeOf } from './video_theme.js';
 
-/** Palette, mirrored from the stylesheet's custom properties. */
-const COLORS = {
-  bgTop: '#171a23',
-  bgBottom: '#0f1117',
-  text: '#e6e8ee',
-  muted: '#8b93a7',
-  accent: '#6c8cff',
-};
+/** Used when a caller passes no options at all, so paintFrame never derefs null. */
+const DEFAULT_PALETTE = themeOf(DEFAULT_THEME);
 
 /** Radius as a fraction of the short edge, so one layout fits every preset. */
 const PAD = 0.07;
 
+/**
+ * Wrap `text` to `maxWidth`, returning lines.
+ *
+ * Chinese has no spaces, so wrapping falls back to per-character measurement;
+ * Latin text then loses the courtesy of a word boundary. When the caller passes
+ * tokens, breaks land on token boundaries instead, which is what keeps a
+ * highlighted token from being split across two lines.
+ */
 function wrapLines(ctx, text, maxWidth) {
-  // Chinese has no spaces, so wrapping has to fall back to per-character
-  // measurement; Latin text then loses the courtesy of a word boundary, which
-  // is a fair trade for one code path that never splits a CJK caption wrongly.
   const lines = [];
   let line = '';
   for (const char of String(text || '')) {
@@ -54,22 +54,39 @@ function wrapLines(ctx, text, maxWidth) {
  * Kept as a free function of (ctx, state) rather than closing over the render
  * loop, so the preview canvas and the recorded canvas draw identically -- a
  * preview that differs from the export is worse than no preview.
+ *
+ * `options` is a normalised object from `normalizeOptions`; every field is
+ * optional so an older caller that passes only the original six keys still
+ * renders the default theme.
  */
-export function paintFrame(ctx, { width, height, cue, title, progress, accent }) {
+export function paintFrame(ctx, {
+  width,
+  height,
+  cue,
+  title,
+  progress,
+  elapsed = 0,
+  options = {},
+}) {
+  const { palette, position = 'bottom', style = 'plain', sizeScale = 1, motion = true, progressBar = true } = options;
+  const theme = palette || DEFAULT_PALETTE;
   const short = Math.min(width, height);
 
   const grad = ctx.createLinearGradient(0, 0, width, height);
-  grad.addColorStop(0, COLORS.bgTop);
-  grad.addColorStop(1, COLORS.bgBottom);
+  grad.addColorStop(0, theme.bgTop);
+  grad.addColorStop(1, theme.bgBottom);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
   // A soft accent glow keeps a mostly-dark frame from looking like a still.
+  // With `motion` it drifts, which is the only movement available on a
+  // gradient field and costs one sinusoid per frame.
+  const drift = motion ? Math.sin(elapsed * 0.35) * short * 0.12 : 0;
   const glow = ctx.createRadialGradient(
-    width * 0.5, height * 0.12, 0,
-    width * 0.5, height * 0.12, short * 0.9
+    width * 0.5 + drift, height * 0.12, 0,
+    width * 0.5 + drift, height * 0.12, short * 0.9
   );
-  glow.addColorStop(0, `${accent || COLORS.accent}22`);
+  glow.addColorStop(0, `${theme.accent}22`);
   glow.addColorStop(1, 'transparent');
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, width, height);
@@ -78,7 +95,7 @@ export function paintFrame(ctx, { width, height, cue, title, progress, accent })
   ctx.textBaseline = 'middle';
 
   if (title) {
-    ctx.fillStyle = COLORS.muted;
+    ctx.fillStyle = theme.muted;
     ctx.font = `500 ${Math.round(short * 0.030)}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
     const titleLines = wrapLines(ctx, title, width * (1 - PAD * 2)).slice(0, 2);
     const lineHeight = short * 0.045;
@@ -87,43 +104,89 @@ export function paintFrame(ctx, { width, height, cue, title, progress, accent })
     });
   }
 
-  if (cue && cue.text) {
-    const fontSize = Math.round(short * 0.056);
+  const captionText = captionFor(cue, style, elapsed);
+  if (captionText) {
+    const fontSize = Math.round(short * 0.056 * sizeScale);
     ctx.font = `600 ${fontSize}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
-    const lines = wrapLines(ctx, cue.text, width * (1 - PAD * 2)).slice(0, 3);
+    const lines = wrapLines(ctx, captionText, width * (1 - PAD * 2)).slice(0, 3);
     const lineHeight = fontSize * 1.35;
-    // Anchored off the progress bar, not the frame edge, so the caption never
-    // collides with it on the square preset.
-    const baseline = height * 0.86 - ((lines.length - 1) * lineHeight) / 2;
+    const baseline = height * captionAnchorY(position) - ((lines.length - 1) * lineHeight) / 2;
 
-    // A dark plate behind the text: white-on-dark is fine, but the glow varies
-    // and a caption that sometimes sits on a lighter patch is unreadable.
-    const widest = Math.max(...lines.map((line) => ctx.measureText(line).width));
-    const plateWidth = Math.min(width * (1 - PAD), widest + fontSize * 0.8);
-    const plateHeight = lines.length * lineHeight + fontSize * 0.5;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    roundRect(
-      ctx,
-      (width - plateWidth) / 2,
-      baseline - plateHeight / 2,
-      plateWidth,
-      plateHeight,
-      fontSize * 0.28
-    );
-    ctx.fill();
+    // A plate behind the text where the theme asks for one: white-on-dark is
+    // fine, but the glow varies and a caption that sometimes sits on a lighter
+    // patch is unreadable. The light themes set `plate: 0` and rely on an
+    // outline instead, because a dark box over near-white paper reads as a bug.
+    if (theme.plate > 0) {
+      const widest = Math.max(...lines.map((line) => ctx.measureText(line).width));
+      const plateWidth = Math.min(width * (1 - PAD), widest + fontSize * 0.8);
+      const plateHeight = lines.length * lineHeight + fontSize * 0.5;
+      ctx.fillStyle = `rgba(0, 0, 0, ${theme.plate})`;
+      roundRect(
+        ctx,
+        (width - plateWidth) / 2,
+        baseline - plateHeight / 2,
+        plateWidth,
+        plateHeight,
+        fontSize * 0.28
+      );
+      ctx.fill();
+    }
 
-    ctx.fillStyle = COLORS.text;
+    // Outline first, for the themes without a plate: the same shadow that makes
+    // white-on-dark crisp makes black-on-paper legible cream.
+    ctx.strokeStyle = theme.plate > 0 ? 'rgba(0, 0, 0, 0.55)' : theme.bgTop;
+    ctx.lineWidth = Math.max(2, fontSize * 0.045);
+    ctx.lineJoin = 'round';
     lines.forEach((line, index) => {
-      ctx.fillText(line, width / 2, baseline + (index - (lines.length - 1) / 2) * lineHeight);
+      const y = baseline + (index - (lines.length - 1) / 2) * lineHeight;
+      ctx.strokeText(line, width / 2, y);
     });
+
+    ctx.fillStyle = theme.text;
+    lines.forEach((line, index) => {
+      const y = baseline + (index - (lines.length - 1) / 2) * lineHeight;
+      ctx.fillText(line, width / 2, y);
+    });
+
+    // Karaoke repaints the active token over the finished line, in the accent
+    // colour. The x offset is measured from the line's own text so the
+    // highlight lands on the character being spoken even when the token repeats
+    // elsewhere in the cue -- matching by string was the first attempt and it
+    // highlighted the wrong `的`.
+    if (style === 'karaoke' && cue?.words?.length) {
+      const active = activeTokenIndex(cue.words, elapsed);
+      const activeWord = active >= 0 ? cue.words[active]?.word : '';
+      if (activeWord) {
+        ctx.fillStyle = theme.accent;
+        lines.forEach((line, index) => {
+          const y = baseline + (index - (lines.length - 1) / 2) * lineHeight;
+          const at = line.indexOf(activeWord);
+          if (at < 0) return;
+          const prefix = line.slice(0, at);
+          const lineWidth = ctx.measureText(line).width;
+          const prefixWidth = ctx.measureText(prefix).width;
+          const tokenWidth = ctx.measureText(activeWord).width;
+          ctx.fillText(activeWord, width / 2 - lineWidth / 2 + prefixWidth + tokenWidth / 2, y);
+        });
+      }
+    }
   }
 
-  const barHeight = Math.max(3, Math.round(short * 0.006));
-  const barY = height - barHeight * 2;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
-  ctx.fillRect(0, barY, width, barHeight);
-  ctx.fillStyle = accent || COLORS.accent;
-  ctx.fillRect(0, barY, width * Math.max(0, Math.min(1, progress || 0)), barHeight);
+  if (progressBar) {
+    const barHeight = Math.max(3, Math.round(short * 0.006));
+    const barY = height - barHeight * 2;
+    ctx.fillStyle = theme.plate > 0 ? 'rgba(255, 255, 255, 0.10)' : 'rgba(0, 0, 0, 0.10)';
+    ctx.fillRect(0, barY, width, barHeight);
+    ctx.fillStyle = theme.accent;
+    ctx.fillRect(0, barY, width * Math.max(0, Math.min(1, progress || 0)), barHeight);
+  }
+}
+
+/** Caption text for the active style at `elapsed`. */
+function captionFor(cue, style, elapsed) {
+  if (!cue) return '';
+  if (style === 'word_by_word' && cue.words?.length) return tokensRevealed(cue.words, elapsed);
+  return cue.text || '';
 }
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -190,7 +253,7 @@ export async function renderVideo({
   width = 1280,
   height = 720,
   title = '',
-  accent = COLORS.accent,
+  options: rawOptions = {},
   monitor = true,
   onProgress = () => {},
   signal,
@@ -229,7 +292,8 @@ export async function renderVideo({
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
-  paintFrame(ctx, { width, height, cue: null, title, progress: 0, accent });
+  const options = normalizeOptions({ ...rawOptions, title });
+  paintFrame(ctx, { width, height, cue: null, title, progress: 0, elapsed: 0, options });
 
   const stream = canvas.captureStream(FPS);
   for (const track of destination.stream.getAudioTracks()) stream.addTrack(track);
@@ -268,7 +332,8 @@ export async function renderVideo({
       cue: cueAt(timeline.cues, elapsed),
       title,
       progress: elapsed / timeline.duration,
-      accent,
+      elapsed,
+      options,
     });
     onProgress(Math.min(1, elapsed / timeline.duration));
     frameHandle = requestAnimationFrame(draw);

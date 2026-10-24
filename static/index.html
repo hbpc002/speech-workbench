@@ -50,11 +50,20 @@
 
     <div class="controls">
       <label>画布 <select id="tts-video-preset"></select></label>
+      <label>主题 <select id="tts-video-theme"></select></label>
+      <label>字号 <select id="tts-video-size"></select></label>
+    </div>
+
+    <div class="controls">
+      <label>字幕样式 <select id="tts-video-style"></select></label>
+      <label>字幕位置 <select id="tts-video-position"></select></label>
       <label class="grow">标题 <input type="text" id="tts-video-title" maxlength="60"
              placeholder="留空则只显示字幕"></label>
     </div>
 
     <div class="controls">
+      <label class="vcheck"><input type="checkbox" id="tts-video-motion" checked> 背景微动</label>
+      <label class="vcheck"><input type="checkbox" id="tts-video-progressbar" checked> 进度条</label>
       <label class="vcheck"><input type="checkbox" id="tts-video-monitor" checked> 录制时播放声音</label>
     </div>
 
