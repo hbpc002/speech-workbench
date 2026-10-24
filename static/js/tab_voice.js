@@ -48,10 +48,15 @@ import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } from '/static/js/tag_dialog.js';
 import { MAX_SECONDS, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
+import { hydrateVoiceAliases, rememberAlias } from '/static/js/voice_aliases.js';
+import { MAX_NAME, autoNameRows, createdMsOf, idOf, parseNames, serializeNames, visibleRows } from '/static/js/voice_view.js';
 import { voicePrefixFor } from '/static/js/voice_prefix.js';
 
 const MAX_PREVIEWS = 30;
 const MAX_CLONE_LOGS = 50;
+
+/** Remembered across reloads: the list order is a preference, not state. */
+const SORT_KEY = 'voice.sort';
 
 /** 清空文本 / 撤销 for the preview script, same behaviour as the synthesis tab. */
 const previewText = createScriptBox({
@@ -121,6 +126,11 @@ let voiceModels = new Map();
 let voiceMeta = new Map();
 /** The tag currently filtering the list, or '' for all. */
 let filterTag = '';
+/** Which row is being renamed in place, if any. */
+let editingId = '';
+/** The search box and 排序 choice, mirrored from the DOM so a re-render keeps them. */
+let searchQuery = '';
+let sortMode = 'created-desc';
 /**
  * The cloned voices currently on screen, and the single source both the render
  * and the local cache are written from.
@@ -171,6 +181,9 @@ async function setVoiceMeta(voiceId, patch) {
   next.alias = (next.alias || '').trim();
   next.tags = (next.tags || []).map((t) => String(t).trim()).filter(Boolean);
   voiceMeta.set(voiceId, next);
+  // Keep the shared alias map in step so the synthesis tab shows the new name
+  // without reloading its own state.
+  rememberAlias(voiceId, next.alias);
   await saveVoiceMeta(next).catch(() => {});
   return next;
 }
@@ -179,19 +192,27 @@ async function setVoiceMeta(voiceId, patch) {
  * Upstream has no rename: `update_voice` replaces the sample audio, and the
  * voice_id is the identity the model is bound to. So this sets a local alias,
  * and says so, rather than pretending the id changed.
+ *
+ * Edits in place: a `window.prompt` cannot show the current name beside the
+ * others, which is the whole reason someone renames a voice -- they are
+ * comparing it to its neighbours.
  */
 function renameVoice(voiceId) {
-  const current = voiceMeta.get(voiceId)?.alias || '';
-  const next = window.prompt(
-    '起个本地别名，方便在列表和生成音色下拉里认出来。\n' +
-    '不会改上游的音色 ID —— 上游没有改名接口，别名只存在这台设备上。',
-    current
-  );
-  if (next === null) return;
-  setVoiceMeta(voiceId, { alias: next }).then(() => {
-    log('voice-status', `已把 ${voiceId} 命名为「${next.trim() || voiceId}」`, 'system');
-    refreshVoices({ force: true });
-  });
+  editingId = voiceId;
+  renderVoiceList(voiceList);
+}
+
+/** Commit whatever is in the inline rename box. */
+async function commitRename(voiceId, raw) {
+  const previous = (voiceMeta.get(voiceId)?.alias || '').trim();
+  const next = String(raw || '').trim().slice(0, 40);
+  if (next === previous) return;
+
+  await setVoiceMeta(voiceId, { alias: next });
+  log('voice-status', next ? `已把 ${voiceId} 命名为「${next}」` : `已清除 ${voiceId} 的名称`, 'system');
+  // Local only: the row and the picker both read `voiceMeta`, so there is
+  // nothing to fetch and no reason to spend an upstream round trip.
+  renderVoiceList(voiceList);
 }
 
 function editTags(voiceId) {
@@ -200,8 +221,109 @@ function editTags(voiceId) {
   if (next === null) return;
   setVoiceMeta(voiceId, { tags: next.split(/[、,，]/).map((t) => t.trim()).filter(Boolean) }).then(() => {
     log('voice-status', `已更新 ${voiceId} 的标签`, 'system');
-    refreshVoices({ force: true });
+    renderVoiceList(voiceList);
   });
+}
+
+/**
+ * Write every name, tag and note to a file.
+ *
+ * The names live in IndexedDB and nowhere else -- clearing site data loses
+ * them, and a redeploy does not restore them -- so this is the only backup
+ * there is.
+ */
+function exportNames() {
+  const records = [...voiceMeta.values()];
+  if (!records.length) {
+    log('voice-status', '还没有命名过任何音色，没有可导出的内容。', 'error');
+    return;
+  }
+
+  const blob = new Blob([serializeNames(records)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `音色名称-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  // Revoked on the next tick: revoking synchronously can cancel the download
+  // in some browsers before it starts.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  log('voice-status', `已导出 ${records.length} 个音色的名称。`, 'system');
+}
+
+/**
+ * Read a backup back in.
+ *
+ * A name already set here wins: the file is a backup, and re-importing it must
+ * not undo a rename made since it was written. Tags and notes merge, because
+ * they have no single value to conflict over.
+ */
+async function importNames(file) {
+  let records;
+  try {
+    records = parseNames(await file.text());
+  } catch (error) {
+    log('voice-status', `导入失败：${error.message}`, 'error');
+    return;
+  }
+  if (!records.length) {
+    log('voice-status', '文件里没有可导入的名称。', 'error');
+    return;
+  }
+
+  const known = new Set([...voiceMeta.keys(), ...voiceList.map(idOf)]);
+  let restored = 0;
+  let kept = 0;
+  let unknown = 0;
+
+  for (const record of records) {
+    if (!record.id) continue;
+    if (!known.has(record.id)) {
+      // The voice may have been deleted upstream, or the file may come from
+      // another account. Counted separately so the missing rows are explained
+      // rather than silently absent.
+      unknown += 1;
+      continue;
+    }
+    const current = voiceMeta.get(record.id) || {};
+    const hasAlias = Boolean((current.alias || '').trim());
+    const alias = hasAlias ? current.alias : record.alias;
+    const tags = [...new Set([...(current.tags || []), ...record.tags])];
+    const note = (current.note || '').trim() ? current.note : record.note;
+
+    if (hasAlias) kept += 1;
+    else restored += 1;
+    await setVoiceMeta(record.id, { alias, tags, note });
+  }
+
+  renderVoiceList(voiceList);
+  const parts = [`已从备份恢复 ${restored} 个音色的名称`];
+  if (kept) parts.push(`${kept} 个本机已命名、未覆盖`);
+  if (unknown) parts.push(`${unknown} 个不在当前列表里、已跳过`);
+  log('voice-status', `${parts.join('，')}。`, 'system');
+}
+
+/**
+ * Give every unnamed voice `新音色 N`.
+ *
+ * Done once per fetch rather than on render: the result is written to
+ * IndexedDB, and that stored name is what keeps the number stable. Deriving it
+ * at paint time would renumber everything the moment one voice was deleted.
+ *
+ * Returns how many were named so the caller can say so.
+ */
+async function nameUnnamed(list) {
+  const rows = list.map((entry) => ({
+    ...entry,
+    name: (voiceMeta.get(idOf(entry))?.alias || '').trim(),
+  }));
+  const used = [...voiceMeta.values()].map((entry) => (entry.alias || '').trim()).filter(Boolean);
+  const planned = autoNameRows(rows, used);
+
+  for (const entry of planned) {
+    await setVoiceMeta(entry.id, { alias: entry.name });
+  }
+  return planned.length;
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -482,9 +604,20 @@ function renderTagFilter() {
   filterTag = select.value;
 }
 
-function matchesFilter(entry) {
-  if (!filterTag) return true;
-  return tagsFor(entry.voice_id || entry.voiceId || String(entry)).includes(filterTag);
+/** A row as `voice_view.js` wants it: resolved name, tags and creation time. */
+function rowOf(entry) {
+  const voiceId = idOf(entry);
+  return {
+    ...entry,
+    name: labelFor(voiceId),
+    tags: tagsFor(voiceId),
+    createdMs: createdMsOf(entry),
+  };
+}
+
+/** The rows to paint: tag filter, search and order, all from voice_view.js. */
+function rowsOnScreen(list) {
+  return visibleRows(list.map(rowOf), { query: searchQuery, sort: sortMode, tag: filterTag });
 }
 
 async function refreshVoices({ force = false } = {}) {
@@ -503,7 +636,11 @@ async function refreshVoices({ force = false } = {}) {
     voiceList = list;
     voiceListFetchedAt = Date.now();
     voiceListFromCache = false;
+    // Before the paint, so a fresh clone never flashes its raw id. Only on a
+    // real fetch: the cache holds whatever was named last time.
+    const named = await nameUnnamed(list);
     renderVoiceList(list, { stale: response.stale });
+    if (named) log('voice-status', `已为 ${named} 个未命名的音色自动编号，可点「改名」调整。`, 'system');
     // The local copy is what the next page load paints before the network
     // answers, so it is written on every success, never on failure.
     saveVoiceListCache(list).catch(() => {});
@@ -561,103 +698,160 @@ function renderVoiceList(list, { stale = false, fromCache = false, fetchedAt = 0
     return;
   }
 
-  const visible = list.filter(matchesFilter);
+  const visible = rowsOnScreen(list);
   el('voice-list-count').textContent = visible.length
     ? `${visible.length} / ${list.length} 个`
     : '';
 
   if (!visible.length) {
-    container.innerHTML = `<p class="muted">没有带「${filterTag}」标签的音色。</p>`;
+    // Say which criterion hid everything: with three of them, "没有音色" would
+    // leave the operator hunting for a filter they forgot they set.
+    const active = [filterTag && `标签「${filterTag}」`, searchQuery.trim() && `搜索「${searchQuery.trim()}」`]
+      .filter(Boolean)
+      .join(' 和 ');
+    container.innerHTML = `<p class="muted">没有${active ? `符合 ${active} 的` : ''}音色。</p>`;
   }
 
-    for (const entry of visible) {
-      const voiceId = entry.voice_id || entry.voiceId || String(entry);
-      if (entry.target_model) voiceModels.set(voiceId, entry.target_model);
+  for (const entry of visible) {
+    const voiceId = entry.voice_id || entry.voiceId || String(entry);
+    if (entry.target_model) voiceModels.set(voiceId, entry.target_model);
 
-      const row = document.createElement('div');
-      row.className = 'voice-row';
+    const row = document.createElement('div');
+    row.className = 'voice-row';
 
-      const label = document.createElement('span');
-      label.className = 'voice-id';
-      const alias = voiceMeta.get(voiceId)?.alias;
-      label.textContent = alias || voiceId;
-      if (alias) {
-        const real = document.createElement('span');
-        real.className = 'voice-real-id';
-        real.textContent = voiceId;
-        label.appendChild(real);
-      }
-      // The server derives these from the id and the upstream status field.
-      if (entry.target_model) {
-        const tag = document.createElement('span');
-        tag.className = 'voice-tag';
-        tag.textContent = entry.target_model;
-        label.appendChild(tag);
-      }
-      if (entry.status_label) {
-        const badge = document.createElement('span');
-        badge.className = `hbadge ${entry.status_class || ''}`;
-        badge.textContent = entry.status_label;
-        badge.title =
-          entry.status === 'DEPLOYING'
-            ? '音色创建后要经过审核，通过后才能合成'
-            : entry.status === 'UNDEPLOYED'
-              ? '审核未通过，这个音色无法用于合成'
-              : '';
-        label.appendChild(badge);
-      }
-      for (const tag of tagsFor(voiceId)) {
-        const chip = document.createElement('span');
-        chip.className = 'voice-meta-tag';
-        chip.textContent = tag;
-        label.appendChild(chip);
-      }
+    const label = document.createElement('span');
+    label.className = 'voice-id';
+    const alias = voiceMeta.get(voiceId)?.alias;
 
-      const created = document.createElement('span');
-      created.className = 'voice-created';
-      created.textContent = entry.gmt_create ? entry.gmt_create.slice(0, 10) : '';
-      created.title = entry.gmt_create ? `创建于 ${entry.gmt_create}` : '';
+    if (editingId === voiceId) {
+      // Inline, not a prompt: the point of renaming is telling one row from its
+      // neighbours, and a modal hides exactly those neighbours.
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = alias || '';
+      input.placeholder = voiceId;
+      input.maxLength = MAX_NAME;
+      input.className = 'voice-rename';
+      label.appendChild(input);
 
-      const preview = actionButton('试音', {
+      const save = actionButton('保存', {
+        onClick: () => commitRename(voiceId, input.value),
+      });
+      const cancel = actionButton('取消', {
+        className: 'ghost',
         onClick: () => {
-          select.value = voiceId;
-          noteModelSelection();
-          startPreview(voiceId, currentParams());
+          editingId = '';
+          renderVoiceList(voiceList);
         },
       });
-
-      const rename = actionButton('改名', {
-        className: 'ghost',
-        onClick: () => renameVoice(voiceId),
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitRename(voiceId, input.value);
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          editingId = '';
+          renderVoiceList(voiceList);
+        }
       });
+      // Focus and select a frame later: the row is not in the document yet, so
+      // focusing it here would be a no-op.
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
 
-      const tagButton = actionButton('标签', {
-        className: 'ghost',
-        onClick: () => editTags(voiceId),
-      });
-
-      const remove = actionButton('删除', {
-        className: 'ghost danger',
-        onClick: () => deleteOne(voiceId, remove),
-      });
-
-      row.append(label, created, preview, rename, tagButton, remove);
+      row.append(label, save, cancel);
       container.appendChild(row);
-
-      const option = document.createElement('option');
-      option.value = voiceId;
-      option.textContent = alias ? `${alias}（${voiceId}）` : voiceId;
-      select.appendChild(option);
+      continue;
     }
 
-    // Keep the operator on whatever they had selected; a clone that just
-    // succeeded should become the active voice. Checked against the options
-    // rather than `voiceModels`, which only carries the voices whose
-    // target_model the list reported -- a voice without one could never be
-    // restored, and the picker silently jumped back to the top.
-    applyRecent(select, loadRecent(localStore(), CLONE_VOICE_KEY));
-    if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
-    noteModelSelection();
+    label.textContent = alias || voiceId;
+    if (alias) {
+      const real = document.createElement('span');
+      real.className = 'voice-real-id';
+      real.textContent = voiceId;
+      label.appendChild(real);
+    }
+    // The server derives these from the id and the upstream status field.
+    if (entry.target_model) {
+      const tag = document.createElement('span');
+      tag.className = 'voice-tag';
+      tag.textContent = entry.target_model;
+      label.appendChild(tag);
+    }
+    if (entry.status_label) {
+      const badge = document.createElement('span');
+      badge.className = `hbadge ${entry.status_class || ''}`;
+      badge.textContent = entry.status_label;
+      badge.title =
+        entry.status === 'DEPLOYING'
+          ? '音色创建后要经过审核，通过后才能合成'
+          : entry.status === 'UNDEPLOYED'
+            ? '审核未通过，这个音色无法用于合成'
+            : '';
+      label.appendChild(badge);
+    }
+    for (const tag of tagsFor(voiceId)) {
+      const chip = document.createElement('span');
+      chip.className = 'voice-meta-tag';
+      chip.textContent = tag;
+      label.appendChild(chip);
+    }
+
+    const created = document.createElement('span');
+    created.className = 'voice-created';
+    created.textContent = entry.gmt_create ? entry.gmt_create.slice(0, 10) : '';
+    created.title = entry.gmt_create ? `创建于 ${entry.gmt_create}` : '';
+
+    const preview = actionButton('试音', {
+      onClick: () => {
+        select.value = voiceId;
+        noteModelSelection();
+        startPreview(voiceId, currentParams());
+      },
+    });
+
+    const rename = actionButton('改名', {
+      className: 'ghost',
+      onClick: () => renameVoice(voiceId),
+    });
+
+    const tagButton = actionButton('标签', {
+      className: 'ghost',
+      onClick: () => editTags(voiceId),
+    });
+
+    const remove = actionButton('删除', {
+      className: 'ghost danger',
+      onClick: () => deleteOne(voiceId, remove),
+    });
+
+    row.append(label, created, preview, rename, tagButton, remove);
+    container.appendChild(row);
+  }
+
+  // The picker lists every voice, unfiltered: it is the source of truth for
+  // "which voice do I synthesise with", and hiding an entry because of a search
+  // box meant for the list above would make a voice look deleted.
+  for (const entry of list) {
+    const voiceId = idOf(entry);
+    if (!voiceId) continue;
+    const alias = voiceMeta.get(voiceId)?.alias;
+    const option = document.createElement('option');
+    option.value = voiceId;
+    option.textContent = alias ? `${alias}（${voiceId}）` : voiceId;
+    select.appendChild(option);
+  }
+
+  // Keep the operator on whatever they had selected; a clone that just
+  // succeeded should become the active voice. Checked against the options
+  // rather than `voiceModels`, which only carries the voices whose
+  // target_model the list reported -- a voice without one could never be
+  // restored, and the picker silently jumped back to the top.
+  applyRecent(select, loadRecent(localStore(), CLONE_VOICE_KEY));
+  if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
+  noteModelSelection();
 }
 
 async function deleteOne(voiceId, button) {
@@ -675,6 +869,7 @@ async function deleteOne(voiceId, button) {
     log('voice-status', `已删除 ${labelFor(voiceId)}`, 'system');
     // The alias and tags pointed at an id that no longer exists.
     voiceMeta.delete(voiceId);
+    rememberAlias(voiceId, '');
     await deleteVoiceMeta(voiceId).catch(() => {});
     await recordClone({ voiceId, action: 'delete', ok: true });
     // Dropped locally rather than refetched: the upstream call is what just
@@ -738,6 +933,7 @@ async function clearAll() {
     const voiceId = voiceIdOf(entry);
     if (voiceMeta.has(voiceId)) {
       voiceMeta.delete(voiceId);
+      rememberAlias(voiceId, '');
       deleteVoiceMeta(voiceId).catch(() => {});
     }
   }
@@ -1328,6 +1524,18 @@ export function init() {
   });
   renderTagOptions();
 
+  // Restore the remembered order before the first paint, or the list appears in
+  // one order and jumps to another once the fetch lands.
+  try {
+    const saved = localStorage.getItem(SORT_KEY);
+    if (saved) {
+      sortMode = saved;
+      el('voice-sort').value = saved;
+    }
+  } catch (_) {
+    /* private mode; the default order is fine */
+  }
+
   // One listener on the <select>: refreshVoices() empties and refills its
   // options rather than replacing the element.
   trackSelection(el('voice-play-select'), { storage: localStore(), key: CLONE_VOICE_KEY });
@@ -1342,6 +1550,30 @@ export function init() {
   el('voice-filter-tag').addEventListener('change', (event) => {
     filterTag = event.target.value;
     refreshVoices();
+  });
+
+  // Search and sort re-render from the list already in hand. Going back to the
+  // server for either would put a network round trip behind every keystroke,
+  // and the list does not change while the operator is typing.
+  el('voice-search').addEventListener('input', (event) => {
+    searchQuery = event.target.value;
+    renderVoiceList(voiceList);
+  });
+  el('voice-sort').addEventListener('change', (event) => {
+    sortMode = event.target.value;
+    renderVoiceList(voiceList);
+    try {
+      localStorage.setItem(SORT_KEY, sortMode);
+    } catch (_) {
+      /* private mode; the order just will not persist */
+    }
+  });
+  el('voice-export').addEventListener('click', exportNames);
+  el('voice-import').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    // Cleared so picking the same file twice still fires a change event.
+    event.target.value = '';
+    if (file) importNames(file);
   });
   el('voice-tag-strip').addEventListener('click', () => {
     const textarea = el('voice-play-text');
@@ -1381,6 +1613,9 @@ export function init() {
   loadVoiceMeta()
     .then((rows) => {
       voiceMeta = new Map((rows || []).map((row) => [row.id, row]));
+      // The TTS dropdown reads the shared alias map, not this one, so both
+      // must be filled or it shows raw ids until the operator renames something.
+      hydrateVoiceAliases(rows);
       return paintVoices();
     })
     .catch(() => paintVoices());

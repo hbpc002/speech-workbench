@@ -794,6 +794,54 @@ p.hint {
   margin-top: 12px;
 }
 
+/* ---- generate video dialog ---------------------------------------------- */
+
+.video-stage {
+  margin: 12px 0;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* A 9:16 preview at full dialog width would be taller than the viewport, so
+     the canvas is letterboxed into a fixed box and scaled to fit. */
+  display: flex;
+  justify-content: center;
+}
+
+.video-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 42vh;
+  width: auto;
+  height: auto;
+}
+
+.video-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.video-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.video-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+.small { font-size: 12px; }
+
+a.btn-file { text-decoration: none; }
+
 /* ---- enrollment clip self-check (tab 4) ------------------------------------ */
 
 .clip-check {
@@ -901,6 +949,32 @@ p.hint {
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   flex: 0 0 auto;
+}
+
+/* A <label for="file"> dressed as a ghost button: a hidden file input is the
+   only way to open the picker without a native "Choose file" control, and that
+   control cannot be styled to match the toolbar. */
+label.btn-file {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  flex-direction: row;
+  align-items: center;
+  cursor: pointer;
+}
+label.btn-file:hover { border-color: var(--border-hi); }
+
+input[type="search"] { min-width: 180px; }
+
+/* The inline rename box, sized to sit where the label was. */
+input.voice-rename {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
 @media (max-width: 760px) {

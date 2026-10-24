@@ -40,6 +40,44 @@
     </nav>
   </div>
 
+  <dialog id="tts-video" class="modal">
+    <div class="modal-head">
+      <h2>生成视频</h2>
+      <button type="button" class="ghost" id="tts-video-close">关闭</button>
+    </div>
+
+    <p class="muted" id="tts-video-meta"></p>
+
+    <div class="controls">
+      <label>画布 <select id="tts-video-preset"></select></label>
+      <label class="grow">标题 <input type="text" id="tts-video-title" maxlength="60"
+             placeholder="留空则只显示字幕"></label>
+    </div>
+
+    <div class="controls">
+      <label class="vcheck"><input type="checkbox" id="tts-video-monitor" checked> 录制时播放声音</label>
+    </div>
+
+    <div class="video-stage">
+      <canvas id="tts-video-preview" class="video-preview" width="1280" height="720"></canvas>
+    </div>
+
+    <div class="video-progress">
+      <div class="video-bar"><span id="tts-video-fill"></span></div>
+      <span class="muted" id="tts-video-status">准备就绪</span>
+    </div>
+
+    <p class="muted small">视频在浏览器里实时合成：多长的语音就要录多久，录制期间请让这个标签页保持在前台。
+      服务端不参与渲染，因为 Vercel 上没有 FFmpeg、文件系统也写不进去。</p>
+
+    <div class="modal-foot">
+      <button id="tts-video-start">开始生成</button>
+      <button class="ghost" id="tts-video-cancel" hidden>取消</button>
+      <span class="grow"></span>
+      <a class="btn-file" id="tts-video-download" hidden>下载视频</a>
+    </div>
+  </dialog>
+
   <dialog id="tag-help" class="modal">
     <div class="modal-head">
       <h2>让 AI 帮你写带情感标签的口播稿</h2>
@@ -273,12 +311,28 @@
         <label class="grow">筛选
           <select id="voice-filter-tag"></select>
         </label>
+        <label class="grow">搜索
+          <input id="voice-search" type="search" placeholder="按名称、音色 ID、模型或备注筛选">
+        </label>
+        <label>排序
+          <select id="voice-sort">
+            <option value="created-desc">最近创建</option>
+            <option value="created-asc">最早创建</option>
+            <option value="name">按名称</option>
+            <option value="model">按模型</option>
+          </select>
+        </label>
         <span class="status" id="voice-list-count"></span>
+        <button class="ghost" id="voice-export">导出名称</button>
+        <label class="ghost btn-file" for="voice-import">导入名称</label>
+        <input type="file" id="voice-import" accept=".json,application/json" hidden>
       </div>
 
       <div id="voice-stale" class="clip-check warn" hidden></div>
 
       <div id="voice-list" class="voice-list"></div>
+      <p class="muted note">名称、标签和备注只保存在这台浏览器里，音色本身在阿里云，不受重新部署影响。
+        换设备或清缓存前先「导出名称」备份。</p>
 
       <h2 class="list-title">生成</h2>
 

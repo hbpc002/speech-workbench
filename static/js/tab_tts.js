@@ -27,6 +27,17 @@ import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, renderPresets, syncTagActions } from '/static/js/tag_dialog.js';
 import { hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
+import { displayNameOf } from '/static/js/voice_aliases.js';
+import {
+  DEFAULT_PRESET,
+  PRESETS,
+  buildTimeline,
+  durationOf,
+  extensionOf,
+  fileNameFor,
+  presetOf,
+} from '/static/js/video_timeline.js';
+import { paintFrame, renderVideo } from '/static/js/video_render.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
@@ -236,7 +247,10 @@ function syncTagActionsForThisTab() {
 function voiceLabel(voiceId, modelId) {
   const catalogue = (state.config.tts_models || []).find((m) => m.id === modelId);
   const voice = (catalogue?.voices || []).find((v) => v.id === voiceId);
-  return voice ? `${voice.name} · ${voice.trait}` : voiceId;
+  const catalogueLabel = voice ? `${voice.name} · ${voice.trait}` : voiceId;
+  // A cloned voice the operator has named reads better as that name than as
+  // `cosyvoice-v3-flash-10201530-8f3a2b1c`.
+  return displayNameOf(voiceId, catalogueLabel);
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -344,6 +358,12 @@ function renderCard(record) {
   actions.append(
     actionButton('播放', { onClick: () => playRecord(record), disabled: done === 0 || isBusy }),
     actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: done === 0 || isBusy }),
+    actionButton('生成视频', {
+      onClick: () => openVideo(record),
+      // Nothing to put on the timeline without finished audio, and the render
+      // reads the same `pcm` the WAV download does.
+      disabled: done === 0 || isBusy,
+    }),
     actionButton('重新生成', { onClick: () => generateRecord(record, true), disabled: isBusy }),
     actionButton(expandLabel, {
       onClick() {
@@ -820,7 +840,158 @@ export function init() {
     renderTagChips();
     syncTagActionsForThisTab();
   });
+  // Cards print the voice name; a rename elsewhere has to show up here too.
+  window.addEventListener('voice-aliases-changed', () => {
+    if (records.length) renderHistory();
+  });
   renderTagChips();
   syncTagActionsForThisTab();
   loadHistory();
+  wireVideoDialog();
+}
+
+// ---- generate video -------------------------------------------------------
+
+/** What the dialog is rendering; null when it is closed or idle. */
+let videoJob = null;
+
+/**
+ * Draw the preview frame for the chosen canvas size.
+ *
+ * The preview canvas is the same size as the recorded one. Scaling it in CSS
+ * rather than rendering at preview size keeps one layout path: a preview drawn
+ * to different dimensions would not be a preview of the export at all.
+ */
+function paintVideoPreview(record) {
+  const canvas = el('tts-video-preview');
+  const preset = presetOf(el('tts-video-preset').value);
+  canvas.width = preset.width;
+  canvas.height = preset.height;
+  const ctx = canvas.getContext('2d');
+
+  const timeline = buildTimeline(record.sentences, SAMPLE_RATE);
+  // The first cue stands in for the whole video: it is what the viewer sees at
+  // t=0, and it shows the caption size and wrapping on a real sentence.
+  paintFrame(ctx, {
+    width: preset.width,
+    height: preset.height,
+    cue: timeline.cues[0] || null,
+    title: el('tts-video-title').value.trim(),
+    progress: 0,
+    accent: null,
+  });
+
+  el('tts-video-meta').textContent = timeline.duration
+    ? `${record.sentences.length} 个分段 · ${durationOf(timeline.duration)} · ${timeline.cues.length} 条字幕`
+    : '这条记录还没有生成任何语音。';
+  return timeline;
+}
+
+function setVideoStatus(text, { progress = null, busy = false } = {}) {
+  el('tts-video-status').textContent = text;
+  if (progress !== null) {
+    el('tts-video-fill').style.width = `${Math.round(progress * 100)}%`;
+  }
+  el('tts-video-start').disabled = busy;
+  el('tts-video-close').disabled = busy;
+  el('tts-video-preset').disabled = busy;
+  el('tts-video-title').disabled = busy;
+  el('tts-video-cancel').hidden = !busy;
+}
+
+function openVideo(record) {
+  // A previous job may still hold a blob URL; dropping the reference without
+  // revoking it would leak the whole video for the life of the page.
+  releaseVideoJob();
+  videoJob = { record, controller: null, url: null };
+  fillSelect(el('tts-video-preset'), PRESETS.map((p) => ({ id: p.id, name: p.label })), DEFAULT_PRESET);
+  // A title defaulted from the script saves the operator from retyping the
+  // first line, and is short enough to fit one line at every preset.
+  el('tts-video-title').value = (record.text || '').trim().slice(0, 24);
+  el('tts-video-download').hidden = true;
+  setVideoStatus('准备就绪', { progress: 0 });
+  paintVideoPreview(record);
+
+  const dialog = el('tts-video');
+  if (!dialog.open) dialog.showModal();
+}
+
+/** Release everything the job holds. Safe to call when there is no job. */
+function releaseVideoJob() {
+  if (videoJob?.controller) videoJob.controller.abort();
+  // The blob URL is revoked on close: it pins the whole video in memory, and
+  // the download has either happened or is no longer possible.
+  if (videoJob?.url) URL.revokeObjectURL(videoJob.url);
+  videoJob = null;
+}
+
+function closeVideo() {
+  releaseVideoJob();
+  const dialog = el('tts-video');
+  if (dialog.open) dialog.close();
+}
+
+async function startVideo() {
+  if (!videoJob) return;
+  const record = videoJob.record;
+  const preset = presetOf(el('tts-video-preset').value);
+  const timeline = buildTimeline(record.sentences, SAMPLE_RATE);
+
+  if (!timeline.duration) {
+    setVideoStatus('这条记录没有可用的语音。', { progress: 0 });
+    return;
+  }
+
+  const controller = new AbortController();
+  videoJob.controller = controller;
+  const monitor = el('tts-video-monitor').checked;
+  setVideoStatus('正在生成… 0%', { progress: 0, busy: true });
+
+  try {
+    const { blob, mimeType } = await renderVideo({
+      timeline,
+      sentences: record.sentences,
+      sampleRate: SAMPLE_RATE,
+      width: preset.width,
+      height: preset.height,
+      title: el('tts-video-title').value.trim(),
+      monitor,
+      signal: controller.signal,
+      onProgress: (fraction) => {
+        setVideoStatus(`正在生成… ${Math.round(fraction * 100)}%`, { progress: fraction, busy: true });
+      },
+    });
+
+    if (videoJob?.url) URL.revokeObjectURL(videoJob.url);
+    const url = URL.createObjectURL(blob);
+    if (videoJob) videoJob.url = url;
+
+    const link = el('tts-video-download');
+    link.href = url;
+    link.download = fileNameFor(record.text, extensionOf(mimeType));
+    link.hidden = false;
+    setVideoStatus(`生成完成 · ${(blob.size / 1024 / 1024).toFixed(1)} MB`, { progress: 1 });
+  } catch (error) {
+    // An abort is the operator's own doing, not a failure to report as one.
+    const cancelled = error?.message === '已取消' || controller.signal.aborted;
+    setVideoStatus(cancelled ? '已取消' : `生成失败：${error.message}`, { progress: null });
+  } finally {
+    if (videoJob) videoJob.controller = null;
+  }
+}
+
+function wireVideoDialog() {
+  el('tts-video-close').addEventListener('click', closeVideo);
+  el('tts-video-cancel').addEventListener('click', () => videoJob?.controller?.abort());
+  el('tts-video-start').addEventListener('click', startVideo);
+  el('tts-video-preset').addEventListener('change', () => {
+    if (videoJob) paintVideoPreview(videoJob.record);
+  });
+  el('tts-video-title').addEventListener('input', () => {
+    if (videoJob) paintVideoPreview(videoJob.record);
+  });
+  // Esc closes the dialog without going through the button, which would leave
+  // the recorder running and the blob URL unreleased. Only release here --
+  // calling closeVideo() would re-enter through this same event.
+  el('tts-video').addEventListener('close', releaseVideoJob);
 }

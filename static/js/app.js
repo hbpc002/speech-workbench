@@ -10,6 +10,7 @@ import { api } from './http.js';
 import { record as debugRecord } from './debug_log.js';
 import { initDebugConsole } from './debug_console.js';
 import { TTS_VOICE_KEY, applyRecent, loadRecent, localStore, trackSelection } from './recent.js';
+import { displayNameOf } from './voice_aliases.js';
 // Imported, not re-exported in place: `export { el } from './dom.js'` gives
 // importers a binding but leaves `el` undefined *inside* this module, and the
 // dozens of call sites below would throw ReferenceError.
@@ -143,7 +144,9 @@ function populateVoiceSelect(node, model, selected) {
       // in a 89-entry list without switching each one.
       const caps = capabilities[voice.id];
       const suffix = caps && caps.length ? `　〔${caps.join(' ')}〕` : '';
-      option.textContent = `${voice.name} · ${voice.trait}${suffix}`;
+      // An operator-named voice shows that name first; the catalogue label
+      // stays after it so the traits are still readable.
+      option.textContent = `${displayNameOf(voice.id, `${voice.name} · ${voice.trait}`)}${suffix}`;
       option.dataset.lang = voice.lang;
       optgroup.appendChild(option);
     }
@@ -206,6 +209,14 @@ function populateFromConfig() {
 
   populateModelSelect(el('tts-model'), cfg.tts_models || [], cfg.tts_default_model);
   syncTtsSelectors();
+  // A rename on the voice tab has to reach this dropdown, but rebuilding it
+  // must not move the operator's selection off the voice they picked.
+  window.addEventListener('voice-aliases-changed', () => {
+    const node = el('tts-voice');
+    const current = node.value;
+    populateVoiceSelect(node, (cfg.tts_models || []).find((m) => m.id === el('tts-model').value),
+      current);
+  });
   el('tts-model').addEventListener('change', syncTtsSelectors);
   el('tts-model').addEventListener('change', () => {
     // Tag support is model-specific; the tab panel re-renders off this event.
