@@ -90,6 +90,9 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 
 部署细节（Render 免费版 5GB/月带宽、Vercel 区域选择等）见 [`docs/技术说明.md`](docs/技术说明.md#部署)。
 
+> [!NOTE]
+> **Cloudflare 免费层跑不了这个应用**：Python Workers 的运行时（Pyodide）不支持出站 socket，且运行时是单线程的 —— 实时对话 / 语音合成 / 标注都直连 DashScope，依赖的正是这两样。要上 Cloudflare 只能升到 Workers Paid 用 Containers 跑 `Dockerfile`。理由见 [`docs/技术说明.md`](docs/技术说明.md#cloudflare免费层跑不了)。
+
 ---
 
 ## 文档
