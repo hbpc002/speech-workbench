@@ -23,6 +23,7 @@ import { normalizeOptions, themeOf } from '../../static/js/video_theme.js';
  */
 function recordingContext() {
   const calls = [];
+  const stack = [];
   const ctx = {
     calls,
     measureText: (text) => ({ width: String(text).length * 10 }),
@@ -43,7 +44,26 @@ function recordingContext() {
     arcTo: () => {},
     closePath: () => {},
     fill: () => calls.push({ op: 'fill', fillStyle: ctx.fillStyle }),
+    // The caption entrance animation wraps the block in save/restore and
+    // optionally a translate/scale pair, so the fake has to model the transform
+    // stack: assertions below check that the stack is balanced, and an
+    // unbalanced stack would mean the next frame paints in a moved space.
+    save: () => stack.push({ translate: [0, 0], scale: 1, alpha: ctx.globalAlpha }),
+    restore: () => {
+      const top = stack.pop();
+      if (top) ctx.globalAlpha = top.alpha;
+    },
+    translate: (x, y) => {
+      const top = stack[stack.length - 1];
+      if (top) top.translate = [top.translate[0] + x, top.translate[1] + y];
+      calls.push({ op: 'translate', x, y });
+    },
+    scale: (x) => {
+      const top = stack[stack.length - 1];
+      if (top) top.scale = top.scale * x;
+    },
     lastGlowX: null,
+    stack,
   };
   for (const key of ['fillStyle', 'strokeStyle', 'font', 'lineWidth', 'textAlign', 'textBaseline']) {
     let value = '';

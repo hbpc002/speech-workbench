@@ -21,6 +21,13 @@ import {
 } from './video_timeline.js';
 import { paintFrame, renderVideo } from './video_render.js';
 import {
+  DEFAULT_ROTATE_MODE,
+  DEFAULT_ROTATE_SECONDS,
+  ROTATE_MODES,
+  ROTATE_SECONDS_STEPS,
+  backgroundIndexAt,
+} from './video_rotation.js';
+import {
   MAX_ASSET_BYTES,
   acceptFor,
   deleteAsset,
@@ -32,8 +39,10 @@ import {
   totalBytes,
 } from './video_assets.js';
 import {
+  CAPTION_ANIMATIONS,
   CAPTION_POSITIONS,
   CAPTION_STYLES,
+  DEFAULT_CAPTION_ANIMATION,
   DEFAULT_CAPTION_STYLE,
   DEFAULT_POSITION,
   DEFAULT_SIZE,
@@ -49,10 +58,30 @@ let wired = false;
 
 /** Background assets held in IndexedDB, loaded once per dialog open. */
 let assets = [];
-/** The decoded background music for the current selection, cached by asset id. */
-let musicCache = { id: '', buffer: null };
-/** The loaded background element (image or video) for the selection. */
-let background = null;
+/** Loaded backgrounds, one entry per checked asset, in rotation order. */
+let backgroundPool = [];
+/**
+ * The instant the preview pretends to be at, and which cue is on screen.
+ *
+ * The preview has no clock of its own -- it draws one representative frame -- so
+ * these come from the cue it chose to show. Rotation reads them instead of a
+ * frame counter, which keeps the preview honest: what it shows is what the
+ * export draws at that same second.
+ */
+let previewSeconds = 0;
+let previewCueIndex = -1;
+/**
+ * Ids of the checked backgrounds, in the order they will rotate.
+ *
+ * A list rather than one id because the rotation modes need an ordered pool.
+ * Kept as ids, not elements: the elements are rebuilt on every reopen and the
+ * ids are what survives in memory across a re-render of the list.
+ */
+let chosenBg = new Set();
+/** Id of the chosen music track, or '' for none. */
+let chosenMusic = '';
+/** Cached decoded music buffers, keyed by asset id. */
+const musicBuffers = new Map();
 
 /** Music volume steps. Fixed rather than a slider: three audible levels are enough. */
 const MUSIC_GAINS = [
@@ -92,15 +121,20 @@ function paintPreview() {
   // at 0:00 with a very short line, and it hides whether the layout holds for a
   // wrapping caption.
   const cue = timeline.cues[1] || timeline.cues[0] || null;
+  // The instant the preview draws. Also what the background rotation is resolved
+  // against, so the picture and the caption always agree on which moment this is.
+  const elapsed = cue ? cue.start + (cue.end - cue.start) * 0.4 : 0;
+  previewSeconds = elapsed;
+  previewCueIndex = cue ? cue.index - 1 : -1;
   paintFrame(ctx, {
     width: preset.width,
     height: preset.height,
     cue,
     title: currentOptions().title,
     progress: 0,
-    elapsed: cue ? cue.start + (cue.end - cue.start) * 0.4 : 0,
+    elapsed,
     options: currentOptions(),
-    background: background?.element || null,
+    background: previewBackground(timeline),
   });
 
   el('tts-video-meta').textContent = timeline.duration
@@ -120,6 +154,7 @@ function currentOptions() {
     motion: el('tts-video-motion').checked,
     progressBar: el('tts-video-progressbar').checked,
     scrim: Number(el('tts-video-scrim').value),
+    animation: el('tts-video-animation').value,
   });
 }
 
@@ -156,133 +191,194 @@ function fillOptions() {
     CAPTION_POSITIONS.map((p) => ({ id: p.id, name: p.label })),
     keep('tts-video-position', DEFAULT_POSITION)
   );
+  fillSelect(
+    el('tts-video-animation'),
+    CAPTION_ANIMATIONS.map((a) => ({ id: a.id, name: a.label })),
+    keep('tts-video-animation', DEFAULT_CAPTION_ANIMATION)
+  );
+  fillSelect(
+    el('tts-video-rotate'),
+    ROTATE_MODES.map((m) => ({ id: m.id, name: m.label })),
+    keep('tts-video-rotate', DEFAULT_ROTATE_MODE)
+  );
+  fillSelect(
+    el('tts-video-rotatehold'),
+    ROTATE_SECONDS_STEPS.map((s) => ({ id: s.id, name: s.label })),
+    keep('tts-video-rotatehold', DEFAULT_ROTATE_SECONDS)
+  );
 }
 
-/** The asset currently chosen in a select, or null for 无. */
-function selectedAsset(selectId) {
-  const id = el(selectId).value;
-  return assets.find((asset) => asset.id === id) || null;
+/** Background-capable assets, in the order they were added. */
+function bgAssets() {
+  return assets.filter((a) => a.kind === 'image' || a.kind === 'video');
+}
+
+function musicAssets() {
+  return assets.filter((a) => a.kind === 'music');
+}
+
+/** The checked backgrounds, in list order (which is also rotation order). */
+function chosenBackgrounds() {
+  return bgAssets().filter((asset) => chosenBg.has(asset.id));
 }
 
 /**
- * Refill the background and music selects from `assets`.
+ * One row per stored asset, music included.
  *
- * Backgrounds and music share one store but not one list: picking a song as a
- * background must not be possible, so each select only offers its own kind.
- * The current choice survives the refill so uploading a second asset does not
- * reset the first one that was already chosen.
+ * A checkbox per row rather than a `<select multiple>`: the native multi-select
+ * requires ctrl-click, shows nothing useful on a trackpad, and gives no room for
+ * a size or a delete button. The checkbox is also what makes "which ones will
+ * actually be drawn" visible at a glance, which a selected-row highlight does
+ * not do once the list scrolls.
  */
-function fillAssetSelects() {
-  const backgrounds = assets.filter((a) => a.kind === 'image' || a.kind === 'video');
-  const music = assets.filter((a) => a.kind === 'music');
+function renderAssetList() {
+  const list = el('tts-video-assetlist');
+  list.textContent = '';
 
-  const bgKeep = el('tts-video-bg').value;
-  const muKeep = el('tts-video-music').value;
-  fillSelect(
-    el('tts-video-bg'),
-    [{ id: '', name: '无（用主题背景）' }, ...backgrounds.map((a) => ({ id: a.id, name: assetLabel(a) }))],
-    backgrounds.some((a) => a.id === bgKeep) ? bgKeep : ''
-  );
-  fillSelect(
-    el('tts-video-music'),
-    [{ id: '', name: '无' }, ...music.map((a) => ({ id: a.id, name: assetLabel(a) }))],
-    music.some((a) => a.id === muKeep) ? muKeep : ''
-  );
+  for (const asset of assets) {
+    const isMusic = asset.kind === 'music';
+    const row = document.createElement('li');
+    row.className = `asset-row${isMusic ? ' is-music' : ''}`;
+
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = isMusic ? chosenMusic === asset.id : chosenBg.has(asset.id);
+    box.addEventListener('change', () => {
+      if (isMusic) {
+        // Music is single-choice; ticking one unticks the rest, which is what a
+        // radio would do but without a separate widget for two kinds in one list.
+        chosenMusic = box.checked ? asset.id : '';
+        for (const other of list.querySelectorAll('input[data-music]')) {
+          if (other !== box) other.checked = false;
+        }
+      } else if (box.checked) {
+        chosenBg.add(asset.id);
+      } else {
+        chosenBg.delete(asset.id);
+      }
+      void applyBackgroundChoice();
+      syncRotateControls();
+    });
+    if (isMusic) box.dataset.music = '1';
+
+    const name = document.createElement('span');
+    name.className = 'asset-name';
+    name.textContent = asset.name;
+    name.title = asset.name;
+
+    const meta = document.createElement('span');
+    meta.className = 'asset-meta';
+    meta.textContent = `${kindLabel(asset.kind)} · ${formatBytes(asset.bytes)}`;
+
+    label.append(box, name, meta);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'ghost danger';
+    remove.textContent = '删除';
+    remove.addEventListener('click', () => void removeAsset(asset));
+
+    row.append(label, remove);
+    list.append(row);
+  }
 
   el('tts-video-assetinfo').textContent = assets.length
     ? `${assets.length} 个素材 · 共 ${formatBytes(totalBytes(assets))} · 存在本机浏览器，不上传服务器`
     : `还没有素材。单文件上限 ${formatBytes(MAX_ASSET_BYTES)}，只存在本机浏览器。`;
 }
 
-/** `度假.mp4 · 12.3 MB`, so the select shows size without a second line. */
-function assetLabel(asset) {
-  const kind = asset.kind === 'image' ? '图' : asset.kind === 'video' ? '视频' : '音乐';
-  return `${asset.name} · ${kind} · ${formatBytes(asset.bytes)}`;
+function kindLabel(kind) {
+  return kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音乐';
 }
 
 /**
- * Load the chosen background into an element, ready for drawImage.
+ * Show the rotation controls only when they can matter.
  *
- * Returns null and clears the status on failure: a background that will not
- * decode must degrade to the theme gradient, not abort the export after the
- * operator has waited through it.
+ * With one background there is nothing to rotate and an enabled dropdown would
+ * be a control that does nothing. The hold interval additionally only applies to
+ * the two time-based modes.
  */
-async function loadBackground() {
-  const asset = selectedAsset('tts-video-bg');
-  await teardownBackground();
-  if (!asset) return null;
-
-  const element = asset.kind === 'video' ? document.createElement('video') : new Image();
-  element.src = asset.url;
-  if (asset.kind === 'video') {
-    // Muted + inline: browsers refuse to play unmuted video without a gesture,
-    // and a background video has no sound of its own to keep.
-    element.muted = true;
-    element.loop = true;
-    element.playsInline = true;
-    element.crossOrigin = 'anonymous';
-  }
-
-  try {
-    await new Promise((resolve, reject) => {
-      const done = () => resolve();
-      element.addEventListener(asset.kind === 'video' ? 'loadeddata' : 'load', done, { once: true });
-      element.addEventListener('error', () => reject(new Error('这个素材无法解码')), { once: true });
-    });
-  } catch (error) {
-    setStatus(`背景素材加载失败：${error.message}`, { progress: null });
-    return null;
-  }
-
-  if (asset.kind === 'video') {
-    // Playing it here is what makes the frames advance; the draw loop only
-    // samples whatever the element currently shows.
-    element.play().catch(() => {});
-  }
-  background = { kind: asset.kind, element };
-  return background;
+function syncRotateControls() {
+  const count = chosenBg.size;
+  const mode = el('tts-video-rotate').value;
+  el('tts-video-rotate').disabled = count < 2;
+  const timed = mode === 'time' || mode === 'random';
+  el('tts-video-rotatehold-label').hidden = !timed || count < 2;
 }
 
-async function teardownBackground() {
-  if (background?.kind === 'video') {
-    background.element.pause();
+/**
+ * Load every checked background into an element, ready for drawImage.
+ *
+ * All of them, not just the one on screen: rotation switches mid-render and
+ * waiting for `loadeddata` then would stall the draw loop in the middle of a
+ * recording. A background that fails to decode is dropped from the pool rather
+ * than aborting the export -- the remaining ones still make a usable video, and
+ * the theme gradient covers the case where none survive.
+ */
+async function loadBackgrounds() {
+  await teardownBackgrounds();
+  const pool = [];
+  for (const asset of chosenBackgrounds()) {
+    const element = asset.kind === 'video' ? document.createElement('video') : new Image();
+    element.src = asset.url;
+    if (asset.kind === 'video') {
+      // Muted + inline: browsers refuse to play unmuted video without a gesture,
+      // and a background video has no sound of its own to keep.
+      element.muted = true;
+      element.loop = true;
+      element.playsInline = true;
+    }
+    try {
+      await new Promise((resolve, reject) => {
+        element.addEventListener(asset.kind === 'video' ? 'loadeddata' : 'load', resolve, { once: true });
+        element.addEventListener('error', () => reject(new Error(asset.name)), { once: true });
+      });
+    } catch (error) {
+      setStatus(`背景「${error.message}」无法解码，已跳过。`, { progress: null });
+      continue;
+    }
+    if (asset.kind === 'video') element.play().catch(() => {});
+    pool.push({ kind: asset.kind, element });
   }
-  if (background?.element) {
+  backgroundPool = pool;
+  return pool;
+}
+
+async function teardownBackgrounds() {
+  for (const item of backgroundPool) {
+    if (item.kind === 'video') item.element.pause();
     // Dropping the src releases the decoder; without it a long dialog session
     // keeps every background it ever previewed alive.
-    background.element.removeAttribute?.('src');
-    background.element.src = '';
+    item.element.removeAttribute?.('src');
+    item.element.src = '';
   }
-  background = null;
+  backgroundPool = [];
 }
 
 /**
  * Decode the chosen music into an AudioBuffer.
  *
- * Decoding is per selection and cached by asset id: re-decoding on every
- * preview repaint would stall the dialog for a second on a long track.
+ * Cached by asset id: re-decoding on every preview repaint would stall the
+ * dialog for a second on a long track, and the buffer is immutable.
  */
 async function loadMusic(context) {
-  const asset = selectedAsset('tts-video-music');
-  if (!asset) {
-    musicCache = { id: '', buffer: null };
-    return null;
-  }
-  if (musicCache.id === asset.id) return musicCache.buffer;
+  const asset = musicAssets().find((a) => a.id === chosenMusic);
+  if (!asset) return null;
+  if (musicBuffers.has(asset.id)) return musicBuffers.get(asset.id);
 
   try {
     const bytes = await asset.blob.arrayBuffer();
     const buffer = await context.decodeAudioData(bytes);
-    musicCache = { id: asset.id, buffer };
+    musicBuffers.set(asset.id, buffer);
     return buffer;
   } catch (error) {
     setStatus(`背景音乐无法解码：${error.message}`, { progress: null });
-    musicCache = { id: '', buffer: null };
     return null;
   }
 }
 
-/** Re-read the store and refresh both selects. */
+/** Re-read the store and rebuild the list. */
 async function refreshAssets() {
   try {
     assets = await loadAssets();
@@ -290,7 +386,12 @@ async function refreshAssets() {
     assets = [];
     setStatus(`读取素材失败：${error.message}`, { progress: null });
   }
-  fillAssetSelects();
+  // Selections can only refer to assets that still exist.
+  const ids = new Set(assets.map((a) => a.id));
+  chosenBg = new Set([...chosenBg].filter((id) => ids.has(id)));
+  if (chosenMusic && !ids.has(chosenMusic)) chosenMusic = '';
+  renderAssetList();
+  syncRotateControls();
 }
 
 /** Accept one or more dropped/selected files into the store. */
@@ -310,19 +411,26 @@ async function addFiles(fileList) {
     try {
       await saveAsset(file, kindOfFile(file));
     } catch (error) {
-      // QuotaExceededError arrives here, and it names nothing useful on its own.
-      rejected.push(`${file.name}：写入失败（${error.name === 'QuotaExceededError' ? '浏览器存储已满' : error.message}）`);
+      // QuotaExceededError names nothing useful on its own.
+      rejected.push(
+        `${file.name}：写入失败（${error.name === 'QuotaExceededError' ? '浏览器存储已满' : error.message}）`
+      );
     }
   }
 
   await refreshAssets();
-  // The newest asset is almost always the one being added, so select it: making
-  // the operator find it in a list of twenty is the step this saves.
-  const newest = assets[0];
-  if (newest && accepted.length) {
-    const target = newest.kind === 'music' ? 'tts-video-music' : 'tts-video-bg';
-    el(target).value = newest.id;
+
+  // Newly added backgrounds are ticked automatically: uploading three photos
+  // and then having to tick each one is the step this saves, and rotation is
+  // the whole point of having several.
+  const added = assets.filter((a) => accepted.some((f) => f.name === a.name));
+  for (const asset of added) {
+    if (asset.kind === 'music') chosenMusic = chosenMusic || asset.id;
+    else chosenBg.add(asset.id);
   }
+  renderAssetList();
+  syncRotateControls();
+
   setStatus(
     rejected.length
       ? `已添加 ${accepted.length} 个，${rejected.length} 个被拒绝：${rejected[0]}`
@@ -332,20 +440,8 @@ async function addFiles(fileList) {
   if (accepted.length) await applyBackgroundChoice();
 }
 
-/**
- * Delete the asset currently chosen in the background select.
- *
- * Deletes whichever select holds a real asset, background first: the delete
- * button sits next to both, and doing nothing because two selects exist would
- * be the confusing outcome. Rendered videos do not reference assets by id (the
- * video is already baked), so nothing else has to be cleaned up.
- */
-async function removeSelectedAsset() {
-  const asset = selectedAsset('tts-video-bg') || selectedAsset('tts-video-music');
-  if (!asset) {
-    setStatus('先在「背景」或「背景音乐」里选一个素材，再删除。', { progress: null });
-    return;
-  }
+/** Delete one asset, whatever is selected. */
+async function removeAsset(asset) {
   try {
     await deleteAsset(asset.id);
     URL.revokeObjectURL(asset.url);
@@ -353,14 +449,48 @@ async function removeSelectedAsset() {
     setStatus(`删除失败：${error.message}`, { progress: null });
     return;
   }
+  chosenBg.delete(asset.id);
+  if (chosenMusic === asset.id) chosenMusic = '';
+  musicBuffers.delete(asset.id);
   await refreshAssets();
   setStatus(`已删除「${asset.name}」`, { progress: null });
   await applyBackgroundChoice();
 }
 
+/** Delete whichever asset the list has ticked, if exactly one is ticked. */
+async function removeSelectedAsset() {
+  const picked = chosenBackgrounds();
+  const target = picked.length === 1 ? picked[0] : musicAssets().find((a) => a.id === chosenMusic);
+  if (!target) {
+    setStatus('先勾选一个素材，再点删除。', { progress: null });
+    return;
+  }
+  await removeAsset(target);
+}
+
+/** The background to paint right now, according to the rotation settings. */
+function previewBackground(timeline) {
+  if (!backgroundPool.length) return null;
+  const index = backgroundIndexAt({
+    count: backgroundPool.length,
+    mode: el('tts-video-rotate').value,
+    seconds: previewSeconds,
+    cueIndex: previewCueIndex,
+    holdSeconds: Number(el('tts-video-rotatehold').value),
+    seed: rotationSeed(),
+  });
+  return backgroundPool[index < 0 ? 0 : index]?.element || null;
+}
+
+/** Stable per-dialog seed, so a preview matches what the export will do. */
+let seedValue = 1;
+function rotationSeed() {
+  return seedValue;
+}
+
 /** Apply the current background selection and repaint. */
 async function applyBackgroundChoice() {
-  await loadBackground();
+  await loadBackgrounds();
   if (job) {
     paintPreview();
     attachBackgroundPlayback();
@@ -368,15 +498,14 @@ async function applyBackgroundChoice() {
 }
 
 /**
- * Keep the background video playing across preview repaints.
+ * Keep background videos playing across preview repaints.
  *
- * A repaint does not stop the element, but `paintPreview` can be reached before
- * the video has started (the `loadeddata` await is asynchronous), so this is
- * where playback is re-asserted.
+ * A repaint does not stop the elements, but `paintPreview` can be reached before
+ * `loadeddata` has fired, so this is where playback is re-asserted.
  */
 function attachBackgroundPlayback() {
-  if (background?.kind === 'video' && background.element.paused) {
-    background.element.play().catch(() => {});
+  for (const item of backgroundPool) {
+    if (item.kind === 'video' && item.element.paused) item.element.play().catch(() => {});
   }
 }
 
@@ -413,7 +542,9 @@ function setStatus(text, { progress = null, busy = false } = {}) {
     'tts-video-title',
     'tts-video-motion',
     'tts-video-progressbar',
-    'tts-video-bg',
+    'tts-video-animation',
+    'tts-video-rotate',
+    'tts-video-rotatehold',
     'tts-video-music',
     'tts-video-musicgain',
     'tts-video-scrim',
@@ -468,7 +599,12 @@ async function startRender() {
       title: currentOptions().title,
       options: currentOptions(),
       monitor: el('tts-video-monitor').checked,
-      background,
+      backgrounds: backgroundPool,
+      rotation: {
+        mode: el('tts-video-rotate').value,
+        holdSeconds: Number(el('tts-video-rotatehold').value),
+        seed: rotationSeed(),
+      },
       music,
       musicGain: Number(el('tts-video-musicgain').value),
       // The context the music was decoded in, so nothing is resampled twice.
@@ -487,6 +623,14 @@ async function startRender() {
     link.href = job.url;
     link.download = fileNameFor(job.text, extensionOf(mimeType));
     link.hidden = false;
+
+    // Play it back in place. Downloading to check the result is the loop this
+    // replaces: the file is already in memory, and reopening the dialog rebuilds
+    // it from the same inputs anyway.
+    const player = el('tts-video-player');
+    player.src = job.url;
+    player.hidden = false;
+    player.load();
     setStatus(`生成完成 · ${(blob.size / 1024 / 1024).toFixed(1)} MB`, { progress: 1 });
   } catch (error) {
     // An abort is the operator's own doing, not a failure to report as one.
@@ -510,6 +654,7 @@ export function initVideoDialog() {
     'tts-video-size',
     'tts-video-style',
     'tts-video-position',
+    'tts-video-animation',
     'tts-video-motion',
     'tts-video-progressbar',
   ]) {
@@ -524,9 +669,13 @@ export function initVideoDialog() {
   fillSelect(el('tts-video-musicgain'), MUSIC_GAINS, DEFAULT_MUSIC_GAIN);
   fillSelect(el('tts-video-scrim'), SCRIMS, DEFAULT_SCRIM);
 
-  el('tts-video-bg').addEventListener('change', () => {
-    if (job) void applyBackgroundChoice();
-  });
+  for (const id of ['tts-video-rotate', 'tts-video-rotatehold']) {
+    el(id).addEventListener('change', () => {
+      syncRotateControls();
+      if (job) paintPreview();
+    });
+  }
+
   el('tts-video-music').addEventListener('change', () => {
     // Changing the track only affects the next export, not the frame on screen.
     if (job) setStatus('背景音乐已更换', { progress: null });
@@ -549,11 +698,15 @@ export function initVideoDialog() {
   // calling closeDialog() would re-enter through this same event.
   el('tts-video').addEventListener('close', () => {
     releaseJob();
-    void teardownBackground();
+    void teardownBackgrounds();
     // The object URLs pinned the blobs; the list is re-read on next open.
     for (const asset of assets) URL.revokeObjectURL(asset.url);
     assets = [];
-    musicCache = { id: '', buffer: null };
+    musicBuffers.clear();
+    const player = el('tts-video-player');
+    player.pause();
+    player.removeAttribute('src');
+    player.hidden = true;
   });
 }
 
@@ -576,6 +729,10 @@ export function openVideoDialog({ text = '', sentences = [], sampleRate = 22050 
   // first line, and is short enough to fit one line at every preset.
   el('tts-video-title').value = String(text || '').trim().slice(0, 24);
   el('tts-video-download').hidden = true;
+  const player = el('tts-video-player');
+  player.hidden = true;
+  player.removeAttribute('src');
+  seedValue = Math.floor(Math.random() * 100000) + 1;
   setStatus('准备就绪', { progress: 0 });
 
   const dialog = el('tts-video');

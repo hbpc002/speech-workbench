@@ -56,6 +56,7 @@
 
     <div class="controls">
       <label>字幕样式 <select id="tts-video-style"></select></label>
+      <label>字幕动效 <select id="tts-video-animation"></select></label>
       <label>字幕位置 <select id="tts-video-position"></select></label>
       <label class="grow">标题 <input type="text" id="tts-video-title" maxlength="60"
              placeholder="留空则只显示字幕"></label>
@@ -70,16 +71,20 @@
     <fieldset class="video-assets">
       <legend>背景素材</legend>
 
+      <p class="muted small">勾选多个背景即可轮换；不勾选则只用主题背景。</p>
+      <ul class="asset-list" id="tts-video-assetlist"></ul>
+
       <div class="controls">
-        <label>背景 <select id="tts-video-bg"></select></label>
-        <label>背景音乐 <select id="tts-video-music"></select></label>
-        <label>音乐音量 <select id="tts-video-musicgain"></select></label>
+        <label>轮换方式 <select id="tts-video-rotate"></select></label>
+        <label id="tts-video-rotatehold-label">切换间隔 <select id="tts-video-rotatehold"></select></label>
+        <label class="btn-file" for="tts-video-upload">上传素材…</label>
+        <input type="file" id="tts-video-upload" accept="image/*,video/*,audio/*" multiple hidden>
       </div>
 
       <div class="controls">
+        <label>背景音乐 <select id="tts-video-music"></select></label>
+        <label>音乐音量 <select id="tts-video-musicgain"></select></label>
         <label>压暗 <select id="tts-video-scrim"></select></label>
-        <label class="btn-file" for="tts-video-upload">上传素材…</label>
-        <input type="file" id="tts-video-upload" accept="image/*,video/*,audio/*" multiple hidden>
         <button type="button" class="ghost" id="tts-video-assetdel">删除所选素材</button>
       </div>
 
@@ -91,6 +96,8 @@
     <div class="video-stage">
       <canvas id="tts-video-preview" class="video-preview" width="1280" height="720"></canvas>
     </div>
+
+    <video id="tts-video-player" class="video-player" controls playsinline hidden></video>
 
     <div class="video-progress">
       <div class="video-bar"><span id="tts-video-fill"></span></div>

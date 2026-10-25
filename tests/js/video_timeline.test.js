@@ -13,8 +13,10 @@ import {
   DEFAULT_PRESET,
   FPS,
   PRESETS,
+  MAX_CHARS_PER_CUE,
   buildCues,
   buildTimeline,
+  wordCostOf,
   durationOf,
   extensionOf,
   fileNameFor,
@@ -382,5 +384,144 @@ describe('tokensRevealed', () => {
   it('reveals the whole line once the cue is over', () => {
     // Word-by-word must not leave the last character permanently hidden.
     assert.equal(tokensRevealed(tokens, 9), '中文测试');
+  });
+});
+
+
+describe('wordCostOf', () => {
+  it('counts CJK characters as words', () => {
+    // The original budget used `split(/\s+/)`, which returns 1 for any run of
+    // Chinese. Every cue was therefore billed as a single word, the word budget
+    // never triggered, and a whole paragraph landed in one cue while the audio
+    // played on -- the caption never changed.
+    assert.equal(wordCostOf('你好世界'), 4);
+  });
+
+  it('counts a Latin run as one word', () => {
+    assert.equal(wordCostOf('hello'), 1);
+    assert.equal(wordCostOf('hello world'), 2);
+  });
+
+  it('counts punctuation, so a clause cannot hide behind its punctuation', () => {
+    assert.ok(wordCostOf('你好，世界。') > wordCostOf('你好世界'));
+  });
+
+  it('is zero for whitespace only', () => {
+    assert.equal(wordCostOf('   '), 0);
+    assert.equal(wordCostOf(''), 0);
+  });
+});
+
+describe('buildCues word budget for Chinese', () => {
+  it('splits one long Chinese sentence into several cues', () => {
+    const text = '第一句。第二句字幕应该会切换。第三句。第四句话也在这里。第五句。';
+    const cues = buildCues([text], [10]);
+    assert.ok(cues.length > 1, '一句多分句的中文应该拆成多条字幕');
+    assert.ok(cues.every((cue) => cue.text.length <= MAX_CHARS_PER_CUE));
+  });
+
+  it('keeps the cues in reading order and end to end', () => {
+    const text = '第一句。第二句字幕应该会切换。第三句。';
+    const cues = buildCues([text], [9]);
+    assert.equal(cues.length, 3);
+    assert.deepEqual(cues.map((c) => c.text), ['第一句。', '第二句字幕应该会切换。', '第三句。']);
+    // No gap and no overlap: a dropped millisecond shows as a flash of no
+    // caption, and an overlap shows two.
+    for (let i = 1; i < cues.length; i++) assert.equal(cues[i].start, cues[i - 1].end);
+  });
+
+  it('closes the cue on a sentence-final mark even when the budget allows more', () => {
+    // Three short sentences fit in 42 characters, so the character budget alone
+    // would glue them into one cue and the caption would never change.
+    const cues = buildCues(['甲。乙。丙。'], [1]);
+    assert.deepEqual(cues.map((c) => c.text), ['甲。', '乙。', '丙。']);
+  });
+
+  it('keeps a comma clause inside the same cue while it fits', () => {
+    // A comma is not a sentence end: splitting on it would break one spoken
+    // sentence into two captions that flash past.
+    const cues = buildCues(['好的，我们开始吧。'], [1]);
+    assert.deepEqual(cues.map((c) => c.text), ['好的，我们开始吧。']);
+  });
+
+  it('splits on English terminators too', () => {
+    const cues = buildCues(['One. Two. Three.'], [3]);
+    assert.deepEqual(cues.map((c) => c.text), ['One.', 'Two.', 'Three.']);
+  });
+
+  it('still respects the character budget for unpunctuated text', () => {
+    const text = '一'.repeat(120);
+    const cues = buildCues([text], [20]);
+    assert.ok(cues.length >= 3);
+    assert.ok(cues.every((cue) => cue.text.length <= MAX_CHARS_PER_CUE));
+  });
+
+  it('gives each cue a non-zero span', () => {
+    const cues = buildCues(['你好。世界。'], [0.02]);
+    assert.ok(cues.every((cue) => cue.end > cue.start));
+  });
+
+  it('advances the clock across sentences', () => {
+    const cues = buildCues(['第一句。', '第二句。'], [2, 3]);
+    assert.equal(cues[0].start, 0);
+    assert.equal(cues[0].end, 2);
+    assert.equal(cues[1].start, 2);
+    assert.equal(cues[1].end, 5);
+  });
+
+  it('leaves the timeline length alone when a sentence has no text', () => {
+    // A silent sentence still occupies its time; skipping the clock advance
+    // would slide every later caption early.
+    const cues = buildCues(['第一句。', '', '第三句。'], [1, 2, 1]);
+    const last = cues[cues.length - 1];
+    assert.equal(last.end, 4);
+  });
+});
+
+describe('buildTimeline with several sentences', () => {
+  const pcm = (seconds) => new Int16Array(Math.round(seconds * 22050));
+
+  it('produces one cue per clause, so the caption changes as the audio plays', () => {
+    const timeline = buildTimeline(
+      [
+        { text: '第一句话。', pcm: pcm(2) },
+        { text: '第二句比较长一些，用来测试字幕是否会切换。', pcm: pcm(3) },
+        { text: '第三句。', pcm: pcm(1.5) },
+      ],
+      22050
+    );
+    // One cue per sentence, in order. The comma inside the middle sentence does
+    // not split it: a comma is a pause, not the end of a caption.
+    assert.equal(timeline.cues.length, 3);
+    assert.deepEqual(timeline.cues.map((c) => c.text), [
+      '第一句话。',
+      '第二句比较长一些，用来测试字幕是否会切换。',
+      '第三句。',
+    ]);
+  });
+
+  it('changes the caption mid-sentence when a sentence is just concatenated clauses', () => {
+    // The shape the clone page produces: one flat string, no sentence objects.
+    const timeline = buildTimeline([{ text: '第一句。第二句。第三句。', pcm: pcm(6) }], 22050);
+    assert.equal(timeline.cues.length, 3);
+  });
+
+  it('agrees with the total audio duration', () => {
+    const timeline = buildTimeline([{ text: '甲。', pcm: pcm(2) }, { text: '乙。', pcm: pcm(3) }], 22050);
+    assert.equal(timeline.duration, 5);
+    assert.equal(timeline.cues[timeline.cues.length - 1].end, 5);
+  });
+
+  it('drops a sentence with no audio but keeps the rest in order', () => {
+    const timeline = buildTimeline(
+      [
+        { text: '甲。', pcm: pcm(1) },
+        { text: '乙。', pcm: null },
+        { text: '丙。', pcm: pcm(2) },
+      ],
+      22050
+    );
+    assert.deepEqual(timeline.cues.map((c) => c.text), ['甲。', '丙。']);
+    assert.equal(timeline.duration, 3);
   });
 });

@@ -16,8 +16,16 @@
 //     up as a repeated frame rather than as captions drifting out of sync.
 
 import { FPS, activeTokenIndex, pickMimeType, tokensRevealed } from './video_timeline.js';
-import { DEFAULT_THEME, captionAnchorY, normalizeOptions, themeOf } from './video_theme.js';
+import {
+  DEFAULT_THEME,
+  animationProgress,
+  captionAnchorY,
+  captionTransform,
+  normalizeOptions,
+  themeOf,
+} from './video_theme.js';
 import { coverRect } from './video_assets.js';
+import { backgroundIndexAt } from './video_rotation.js';
 
 /** Used when a caller passes no options at all, so paintFrame never derefs null. */
 const DEFAULT_PALETTE = themeOf(DEFAULT_THEME);
@@ -70,7 +78,17 @@ export function paintFrame(ctx, {
   options = {},
   background = null,
 }) {
-  const { palette, position = 'bottom', style = 'plain', sizeScale = 1, motion = true, progressBar = true, scrim = 0.35 } = options;
+  const {
+    palette,
+    position = 'bottom',
+    style = 'plain',
+    sizeScale = 1,
+    motion = true,
+    progressBar = true,
+    scrim = 0.35,
+    animation = 'none',
+    animationDuration = 0,
+  } = options;
   const theme = palette || DEFAULT_PALETTE;
   const short = Math.min(width, height);
 
@@ -125,6 +143,23 @@ export function paintFrame(ctx, {
 
   const captionText = captionFor(cue, style, elapsed);
   if (captionText) {
+    // The entrance animation transforms the whole caption block, not each line:
+    // per-line offsets make a two-line caption shear apart mid-animation. The
+    // block is positioned first, then transformed about its own anchor, so the
+    // resting layout is identical with and without an animation.
+    const enter = animationDuration
+      ? animationProgress(elapsed - (cue?.start || 0), (cue?.end || 0) - (cue?.start || 0), animationDuration)
+      : 1;
+    const move = captionTransform(animation, enter, short);
+    ctx.save();
+    if (move.alpha < 1) ctx.globalAlpha = move.alpha;
+    if (move.scale !== 1 || move.dx || move.dy) {
+      const anchor = height * captionAnchorY(position);
+      ctx.translate(width / 2 + move.dx, anchor + move.dy);
+      if (move.scale !== 1) ctx.scale(move.scale, move.scale);
+      ctx.translate(-width / 2, -anchor);
+    }
+
     const fontSize = Math.round(short * 0.056 * sizeScale);
     ctx.font = `600 ${fontSize}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
     const lines = wrapLines(ctx, captionText, width * (1 - PAD * 2)).slice(0, 3);
@@ -189,6 +224,8 @@ export function paintFrame(ctx, {
         });
       }
     }
+    
+    ctx.restore();
   }
 
   if (progressBar) {
@@ -235,6 +272,27 @@ function drawableOf(background) {
   // `readyState < 2` is HAVE_CURRENT_DATA, i.e. nothing to draw yet.
   if (element.tagName === 'VIDEO' && element.readyState < 2) return null;
   return element;
+}
+
+/**
+ * Which background to draw for this frame.
+ *
+ * The index is resolved from the clock alone, never from a cursor: a dropped
+ * frame must not skip a background, and the preview has to agree with the
+ * export at the same instant. See video_rotation.js.
+ */
+function pickBackground(pool, single, rotation, elapsed, cue) {
+  if (!pool.length) return single;
+  if (pool.length === 1) return pool[0];
+  const index = backgroundIndexAt({
+    count: pool.length,
+    mode: rotation?.mode,
+    seconds: elapsed,
+    cueIndex: cue ? cue.index - 1 : -1,
+    holdSeconds: rotation?.holdSeconds,
+    seed: rotation?.seed,
+  });
+  return index < 0 ? single : pool[index];
 }
 
 /** The cue visible at `seconds`, or null between cues. */
@@ -302,6 +360,15 @@ export async function renderVideo({
   // The dialog owns loading and the object URL; this function only draws and
   // plays, so it stays callable from a test with a plain canvas.
   background = null,
+  /**
+   * Several backgrounds, for the rotation modes. Each entry is
+   * `{ kind, element }` like `background`; when this has more than one entry the
+   * frame picks among them by `rotation`. Passing `background` as well is
+   * allowed and simply wins for the single case.
+   */
+  backgrounds = null,
+  /** `{ mode, holdSeconds, seed }`; see video_rotation.js. */
+  rotation = null,
   /** Background music, as a decoded AudioBuffer already at `sampleRate`. */
   music = null,
   /** Where music sits relative to the voice. 0.18 is audible under speech. */
@@ -368,7 +435,9 @@ export async function renderVideo({
     progress: 0,
     elapsed: 0,
     options,
-    background: drawableOf(background),
+    background: drawableOf(
+      (backgrounds || []).filter(Boolean).length ? pickBackground((backgrounds || []).filter(Boolean), background, rotation, 0, null) : background
+    ),
   });
 
   const stream = canvas.captureStream(FPS);
@@ -401,18 +470,20 @@ export async function renderVideo({
     stream.getTracks().forEach((track) => track.stop());
   };
 
+  const pool = (backgrounds || []).filter(Boolean);
   const draw = () => {
     if (settled) return;
     const elapsed = audioContext.currentTime - startedAt;
+    const cue = cueAt(timeline.cues, elapsed);
     paintFrame(ctx, {
       width,
       height,
-      cue: cueAt(timeline.cues, elapsed),
+      cue,
       title,
       progress: elapsed / timeline.duration,
       elapsed,
       options,
-      background: drawableOf(background),
+      background: drawableOf(pickBackground(pool, background, rotation, elapsed, cue)),
     });
     onProgress(Math.min(1, elapsed / timeline.duration));
     frameHandle = requestAnimationFrame(draw);

@@ -105,6 +105,80 @@ export const CAPTION_STYLES = [
 
 export const DEFAULT_CAPTION_STYLE = 'plain';
 
+/**
+ * How a caption enters the frame.
+ *
+ * All of these are transform-only: alpha, offset and scale on text that has
+ * already been positioned and wrapped. Doing it any other way (re-laying out
+ * per frame, per-character transforms) would make the caption width jump during
+ * the animation, which is exactly what the eye notices.
+ *
+ * `none` is the default because an entrance animation on every one of sixty
+ * cues in a three-minute video is exhausting; it is a choice, not the baseline.
+ */
+export const CAPTION_ANIMATIONS = [
+  { id: 'none', label: '无', duration: 0 },
+  { id: 'fade', label: '淡入', duration: 0.28 },
+  { id: 'rise', label: '上浮', duration: 0.32 },
+  { id: 'drop', label: '下落', duration: 0.32 },
+  { id: 'zoom', label: '放大', duration: 0.3 },
+  { id: 'slide', label: '侧滑', duration: 0.34 },
+];
+
+export const DEFAULT_CAPTION_ANIMATION = 'none';
+
+/** Resolve an animation id, falling back to the default. */
+export function animationOf(id) {
+  return (
+    CAPTION_ANIMATIONS.find((a) => a.id === id) ||
+    CAPTION_ANIMATIONS.find((a) => a.id === DEFAULT_CAPTION_ANIMATION)
+  );
+}
+
+/**
+ * Progress of the entrance animation at `elapsed` into a cue, in [0, 1].
+ *
+ * Cues can be shorter than the animation, so the duration is clamped to the
+ * cue's own length: a 0.2 s cue with a 0.34 s slide would otherwise never finish
+ * entering before it is replaced.
+ */
+export function animationProgress(elapsedInCue, cueDuration, duration) {
+  if (!duration || duration <= 0) return 1;
+  const span = Math.min(duration, Math.max(0.1, Number(cueDuration) || duration));
+  const t = Math.max(0, Number(elapsedInCue) || 0);
+  // easeOutCubic: fast in, settling at rest. A linear entrance reads as
+  // mechanical next to the eased drift of the background glow.
+  const x = Math.min(1, t / span);
+  return 1 - Math.pow(1 - x, 3);
+}
+
+/**
+ * Transform for a caption at entrance progress `p`.
+ *
+ * Returns `{ alpha, dx, dy, scale }`; the renderer applies them around the
+ * caption's own centre so the block never shifts its baseline.
+ */
+export function captionTransform(animation, p, short = 720) {
+  const t = Math.min(1, Math.max(0, Number(p) || 0));
+  const away = 1 - t;
+  switch (animation) {
+    case 'fade':
+      return { alpha: t, dx: 0, dy: 0, scale: 1 };
+    case 'rise':
+      return { alpha: t, dx: 0, dy: short * 0.06 * away, scale: 1 };
+    case 'drop':
+      return { alpha: t, dx: 0, dy: -short * 0.06 * away, scale: 1 };
+    case 'zoom':
+      // Never start from zero: scaling text up from nothing makes the first
+      // frames unreadable, and 0.82 is the step at which it still reads.
+      return { alpha: t, dx: 0, dy: 0, scale: 0.82 + 0.18 * t };
+    case 'slide':
+      return { alpha: t, dx: short * 0.12 * away, dy: 0, scale: 1 };
+    default:
+      return { alpha: 1, dx: 0, dy: 0, scale: 1 };
+  }
+}
+
 /** Size steps, as a multiplier on the caption's base font size. */
 export const SIZE_STEPS = [
   { id: 'small', label: '小', scale: 0.82 },
@@ -156,6 +230,8 @@ export function normalizeOptions(raw = {}) {
     // it. A photo is the one input whose brightness the theme cannot know, so
     // the scrim is a value the operator can raise rather than a fixed guess.
     scrim: Number.isFinite(raw.scrim) ? Math.max(0, Math.min(0.85, raw.scrim)) : 0.35,
+    animation: pickId(CAPTION_ANIMATIONS, raw.animation, DEFAULT_CAPTION_ANIMATION),
+    animationDuration: animationOf(raw.animation).duration,
   };
 }
 

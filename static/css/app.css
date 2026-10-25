@@ -804,6 +804,9 @@ p.hint {
   padding: 10px 12px 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  /* A fieldset defaults to `min-width: min-content`, which lets one long asset
+     name widen the whole dialog instead of being clipped by its own row. */
+  min-width: 0;
 }
 
 .video-assets legend {
@@ -813,6 +816,73 @@ p.hint {
 }
 
 .video-assets .controls { margin-bottom: 8px; }
+
+/* One row per stored asset. Checked rows are the ones drawn -- a multi-select
+   <select> was the first attempt and it hides which items are chosen. */
+.asset-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 168px;
+  /* A 180-character filename must not be able to widen the dialog: flex items
+     default to `min-width: auto`, so the row would grow to fit the name. */
+  min-width: 0;
+  overflow: auto hidden;
+}
+
+.asset-row { min-width: 0; max-width: 100%; }
+
+.asset-list:empty { display: none; }
+
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.asset-row.is-music { opacity: 0.75; }
+
+.asset-row label {
+  display: flex;
+  /* The global `label` is a column (a caption above its control); this one is a
+     single line with a checkbox, a filename and a badge, so it must say so. */
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.asset-row input[type='checkbox'] { flex-shrink: 0; }
+
+.asset-row .asset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-row .asset-meta { color: var(--muted); flex-shrink: 0; }
+
+.asset-row button,
+.asset-row button.ghost {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.6;
+  min-height: 0;
+}
 
 .video-assets select { max-width: 170px; }
 
@@ -828,6 +898,14 @@ p.hint {
      the canvas is letterboxed into a fixed box and scaled to fit. */
   display: flex;
   justify-content: center;
+}
+
+.video-player {
+  width: 100%;
+  max-height: 46vh;
+  border-radius: 10px;
+  background: #000;
+  margin-bottom: 10px;
 }
 
 .video-preview {

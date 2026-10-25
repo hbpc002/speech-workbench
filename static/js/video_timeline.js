@@ -31,6 +31,25 @@ export const FPS = 30;
 /** Audio pads shorter than this are not worth a cue. */
 const MIN_CUE_SECONDS = 0.05;
 
+/**
+ * How many "words" a piece costs against the per-cue budget.
+ *
+ * `text.split(/\s+/)` returns 1 for any run of Chinese, so every CJK sentence
+ * was billed as a single word no matter how long it was. That made `maxWords`
+ * dead code for the app's primary language: a paragraph of five clauses packed
+ * into one cue and the caption never changed while the audio played on. CJK
+ * characters therefore count as words; Latin still counts on whitespace,
+ * because splitting "hello" into five words would blow the budget on one short
+ * phrase.
+ */
+export function wordCostOf(piece) {
+  const value = String(piece || '');
+  const latin = (value.match(/[A-Za-z0-9'’\-]+/g) || []).length;
+  const cjk = (value.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/g) || []).length;
+  const other = (value.match(/[^\sA-Za-z0-9'’\-\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/g) || []).length;
+  return latin + cjk + other;
+}
+
 /** Resolve a preset id to its dimensions, falling back to the default. */
 export function presetOf(id) {
   return PRESETS.find((preset) => preset.id === id) || PRESETS.find((p) => p.id === DEFAULT_PRESET);
@@ -158,10 +177,14 @@ export function buildCues(sentenceTexts, sentenceSeconds, {
       bufferStart = end;
     };
 
-    pieces.forEach((piece) => {
+    pieces.forEach((piece, pieceIndex) => {
       const share = (piece.length / totalChars) * duration;
       const pieceEnd = clock + share;
-      const words = piece.split(/\s+/).filter(Boolean).length || piece.length;
+      // The word budget exists for Latin text, where eight words is about one
+      // readable line. CJK has no word boundaries, so counting characters
+      // against the same number would break a ten-character sentence in half;
+      // there the character budget and the sentence-final mark decide.
+      const words = hasCJK(piece) ? 0 : wordCostOf(piece) || 1;
       const wouldExceed =
         buffer &&
         (bufferWords + words > maxWords || bufferChars + piece.length > maxChars);
@@ -172,6 +195,14 @@ export function buildCues(sentenceTexts, sentenceSeconds, {
       bufferChars += piece.length;
       bufferWords += words;
       clock = pieceEnd;
+
+      // A sentence-final mark closes the cue. Without this a short three-
+      // sentence line still fits inside the character budget and lands as one
+      // cue, which is the original "字幕不跟着变" complaint: the budget alone
+      // cannot tell one long sentence from three short ones. Closing after the
+      // append matters -- flushing first would strand the piece in a cue of its
+      // own and leave the preceding comma clause with no full stop.
+      if (endsSentence(piece, pieces[pieceIndex + 1])) flush(clock);
     });
 
     // Ends at the sentence boundary, which `clock` now points at.
@@ -181,11 +212,34 @@ export function buildCues(sentenceTexts, sentenceSeconds, {
   return cues;
 }
 
+/** Any Han, kana or hangul character, i.e. a script without word spacing. */
+function hasCJK(text) {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/.test(text);
+}
+
+/**
+ * Does this piece end a sentence?
+ *
+ * The Latin full stop needs the following piece to confirm it: "3." belongs to
+ * "3.14", and splitting there would turn a decimal into a sentence boundary.
+ * The CJK marks are unambiguous and need no lookahead.
+ */
+function endsSentence(piece, next = '') {
+  const value = String(piece || '');
+  if (/[。！？；]$/.test(value)) return true;
+  if (/[!?;]$/.test(value)) return true;
+  if (/\.$/.test(value)) return !/^\d/.test(String(next || '').trim());
+  return false;
+}
+
 /** Whether two pieces need a space between them when joined. */
 function needsSpace(left, right) {
   // Only between two Latin runs: Chinese pieces butt together, and a space
   // between two CJK characters is just a visible gap.
-  return /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right);
+  // A decimal point is a piece boundary to `splitForCaptions` but not a place
+  // for a space: "3." + "14" has to rejoin as "3.14".
+  if (/\.$/.test(left) && /^\d/.test(right)) return false;
+  return /[A-Za-z0-9.!?,;:]$/.test(left) && /^[A-Za-z0-9]/.test(right);
 }
 
 /** Captions are compared and rendered at millisecond precision. */
