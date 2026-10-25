@@ -8,7 +8,7 @@
 // Callers normalise their own records into `{ text, sentences: [{ text, pcm }] }`
 // and pass a sample rate; everything below the dialog is shape-agnostic.
 
-import { el } from '/static/js/dom.js';
+import { el, state } from '/static/js/dom.js';
 import { fillSelect } from '/static/js/tag_dialog.js';
 import {
   DEFAULT_PRESET,
@@ -20,6 +20,7 @@ import {
   presetOf,
 } from './video_timeline.js';
 import { paintFrame, renderVideo } from './video_render.js';
+import { allTagStrings, captionText } from './tag_rules.js';
 import {
   DEFAULT_ROTATE_MODE,
   DEFAULT_ROTATE_SECONDS,
@@ -116,7 +117,7 @@ function paintPreview() {
   canvas.height = preset.height;
   const ctx = canvas.getContext('2d');
 
-  const timeline = buildTimeline(job.sentences, job.sampleRate);
+  const timeline = buildTimeline(job.sentences, job.sampleRate, timelineOptions());
   // The preview shows the second cue when there is one: the first often starts
   // at 0:00 with a very short line, and it hides whether the layout holds for a
   // wrapping caption.
@@ -141,6 +142,16 @@ function paintPreview() {
     ? `${timeline.sentences.length} 个分段 · ${durationOf(timeline.duration)} · ${timeline.cues.length} 条字幕`
     : '这条记录还没有生成任何语音。';
   return timeline;
+}
+
+/**
+ * The options `buildTimeline` needs beyond the sentences themselves.
+ *
+ * The tag list comes from runtime config so the stripper knows `[sad violin]`
+ * as well as `[sad]`; without it a tag would survive into the caption.
+ */
+function timelineOptions() {
+  return { tagStrings: allTagStrings(state.config) };
 }
 
 /** Read every control into one normalised options object. */
@@ -574,7 +585,7 @@ function closeDialog() {
 async function startRender() {
   if (!job) return;
   const preset = presetOf(el('tts-video-preset').value);
-  const timeline = buildTimeline(job.sentences, job.sampleRate);
+  const timeline = buildTimeline(job.sentences, job.sampleRate, timelineOptions());
 
   if (!timeline.duration) {
     setStatus('这条记录没有可用的语音。', { progress: 0 });
@@ -726,8 +737,9 @@ export function openVideoDialog({ text = '', sentences = [], sampleRate = 22050 
   fillSelect(el('tts-video-preset'), PRESETS.map((p) => ({ id: p.id, name: p.label })), DEFAULT_PRESET);
   fillOptions();
   // A title defaulted from the script saves the operator from retyping the
-  // first line, and is short enough to fit one line at every preset.
-  el('tts-video-title').value = String(text || '').trim().slice(0, 24);
+  // first line, and is short enough to fit one line at every preset. Tags are
+  // stripped first: the default would otherwise read "[sad]今天…" on screen.
+  el('tts-video-title').value = captionText(text, allTagStrings(state.config)).slice(0, 24);
   el('tts-video-download').hidden = true;
   const player = el('tts-video-player');
   player.hidden = true;

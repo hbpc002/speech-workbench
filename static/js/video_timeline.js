@@ -12,6 +12,8 @@
 // project): words are packed into display cues within a word budget and a
 // character budget, and each cue carries the start/end of the words it holds.
 
+import { captionText } from './tag_rules.js';
+
 /** Frame sizes offered in the dialog, as [width, height]. */
 export const PRESETS = [
   { id: '16:9', label: '横屏 16:9', width: 1280, height: 720 },
@@ -321,7 +323,12 @@ export function buildTimeline(sentences, sampleRate = 22050, options = {}) {
   // would sit a cue over a gap of silence.
   const rows = (sentences || [])
     .map((sentence) => ({
-      text: sentence?.text || '',
+      // Emotion tags (`[sad]`, `[giggles]`) are instructions to the synthesis
+      // engine and were consumed before the audio was made -- they are not
+      // spoken, so they must not be drawn. Stripping happens here rather than
+      // at each call site because every caption in the app comes through this
+      // function, and a second, forgotten path would put them back on screen.
+      text: captionText(sentence?.text || '', options.tagStrings),
       seconds: secondsOfPcm(sentence?.pcm, sampleRate),
     }))
     .filter((row) => row.seconds > 0);

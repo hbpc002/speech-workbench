@@ -26,7 +26,7 @@ import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, renderPresets, syncTagActions } from '/static/js/tag_dialog.js';
-import { hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
+import { allTagStrings, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
 import { displayNameOf } from '/static/js/voice_aliases.js';
 import { initVideoDialog, openVideoDialog } from '/static/js/video_dialog.js';
 
@@ -154,9 +154,7 @@ function lastControlTag(text) {
 
 /** All tags the current config knows about, as literal strings. */
 function allTags() {
-  const control = (state.config.control_tags || []).map((t) => t.tag);
-  const rich = (state.config.rich_tags || []).map((t) => t.tag);
-  return [...control, ...rich].sort((a, b) => b.length - a.length);
+  return allTagStrings(state.config);
 }
 
 /** Removes recognised emotion tags from `text`; other brackets are left alone. */

@@ -524,4 +524,68 @@ describe('buildTimeline with several sentences', () => {
     assert.deepEqual(timeline.cues.map((c) => c.text), ['甲。', '丙。']);
     assert.equal(timeline.duration, 3);
   });
+
+  describe('emotion tags in the script', () => {
+    // Tags steer synthesis and were consumed before the audio existed, so they
+    // are not spoken. Drawing them was the bug: captions read "[sad]今天…".
+    const TAGS = ['[giggles]', '[excited]', '[sad]'];
+
+    it('does not draw a tag', () => {
+      const timeline = buildTimeline(
+        [{ text: '[sad]今天真的很难过。', pcm: pcm(2) }],
+        22050,
+        { tagStrings: TAGS }
+      );
+      assert.deepEqual(timeline.cues.map((c) => c.text), ['今天真的很难过。']);
+    });
+
+    it('strips a tag from every sentence, not just the first', () => {
+      const timeline = buildTimeline(
+        [
+          { text: '[sad]一。', pcm: pcm(1) },
+          { text: '[giggles]二。', pcm: pcm(1) },
+          { text: '[excited]三。', pcm: pcm(1) },
+        ],
+        22050,
+        { tagStrings: TAGS }
+      );
+      assert.deepEqual(timeline.cues.map((c) => c.text), ['一。', '二。', '三。']);
+    });
+
+    it('leaves a tag alone when the config does not list it', () => {
+      // A bracket that is not a known tag is ordinary text -- [1] in a list, or
+      // a note the operator typed. Dropping every bracket would eat those.
+      const timeline = buildTimeline(
+        [{ text: '[unknown]第一点[1]。', pcm: pcm(2) }],
+        22050,
+        { tagStrings: TAGS }
+      );
+      assert.deepEqual(timeline.cues.map((c) => c.text), ['[unknown]第一点[1]。']);
+    });
+
+    it('does nothing when no tag list is supplied', () => {
+      const timeline = buildTimeline([{ text: '[sad]难过。', pcm: pcm(2) }], 22050);
+      assert.deepEqual(timeline.cues.map((c) => c.text), ['[sad]难过。']);
+    });
+
+    it('removes a longer tag whole rather than its prefix', () => {
+      const timeline = buildTimeline(
+        [{ text: '[sad violin]忧郁的调子。', pcm: pcm(2) }],
+        22050,
+        { tagStrings: ['[sad violin]', '[sad]'] }
+      );
+      assert.deepEqual(timeline.cues.map((c) => c.text), ['忧郁的调子。']);
+    });
+
+    it('keeps the timing unchanged', () => {
+      // Stripping text must not move a cue: the audio is already made and its
+      // duration has nothing to do with how many characters the tag had.
+      const withTag = buildTimeline([{ text: '[sad]难过。', pcm: pcm(2) }], 22050, { tagStrings: TAGS });
+      const bare = buildTimeline([{ text: '难过。', pcm: pcm(2) }], 22050, { tagStrings: TAGS });
+      assert.deepEqual(
+        withTag.cues.map((c) => [c.start, c.end]),
+        bare.cues.map((c) => [c.start, c.end])
+      );
+    });
+  });
 });
