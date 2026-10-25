@@ -31,7 +31,10 @@ function recordingContext() {
       ctx.lastGlowX = x;
       return { addColorStop: () => {} };
     },
-    fillRect: (x, y, w, h) => calls.push({ op: 'fillRect', x, y, w, h, fillStyle: ctx.fillStyle }),
+    fillRect: (x, y, w, h) =>
+      calls.push({ op: 'fillRect', x, y, w, h, fillStyle: ctx.fillStyle, globalAlpha: ctx.globalAlpha }),
+    drawImage: (image, x, y, w, h) =>
+      calls.push({ op: 'drawImage', image, x, y, w, h, globalAlpha: ctx.globalAlpha }),
     strokeText: (text, x, y) => calls.push({ op: 'strokeText', text, x, y, strokeStyle: ctx.strokeStyle }),
     fillText: (text, x, y) =>
       calls.push({ op: 'fillText', text, x, y, fillStyle: ctx.fillStyle, font: ctx.font }),
@@ -51,6 +54,13 @@ function recordingContext() {
       },
     });
   }
+  let alpha = 1;
+  Object.defineProperty(ctx, 'globalAlpha', {
+    get: () => alpha,
+    set: (next) => {
+      alpha = next;
+    },
+  });
   return ctx;
 }
 
@@ -245,5 +255,119 @@ describe('cueAt', () => {
     assert.equal(cueAt([{ start: 0, end: 1, text: 'a' }], 5), null);
     assert.equal(cueAt([], 0), null);
     assert.equal(cueAt(null, 0), null);
+  });
+});
+
+describe('paintFrame with a background', () => {
+  /** A fake drawable: paintFrame only reads width/height and passes it to drawImage. */
+  const image = { tagName: 'IMG', width: 800, height: 800 };
+
+  it('draws the background over the gradient', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions(),
+      background: image,
+    });
+    const draw = ctx.calls.find((c) => c.op === 'drawImage');
+    assert.ok(draw, '背景未绘制');
+    assert.equal(draw.image, image);
+  });
+
+  it('covers the frame instead of fitting inside it', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions(),
+      background: image,
+    });
+    const draw = ctx.calls.find((c) => c.op === 'drawImage');
+    assert.equal(draw.w, FRAME.width);
+    assert.equal(draw.h, FRAME.width);
+    assert.ok(draw.y < 0, '方图放进横幅时应上下溢出并被裁掉');
+  });
+
+  it('dims the background by the scrim so captions stay readable', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions({ scrim: 0.5 }),
+      background: image,
+    });
+    const scrim = ctx.calls.find((c) => c.op === 'fillRect' && c.w === FRAME.width && c.globalAlpha === 0.5);
+    assert.ok(scrim, '应有一层 0.5 透明度的压暗');
+  });
+
+  it('skips the scrim entirely at 0', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions({ scrim: 0 }),
+      background: image,
+    });
+    const dimmed = ctx.calls.filter((c) => c.op === 'fillRect' && c.globalAlpha !== 1);
+    assert.equal(dimmed.length, 0);
+  });
+
+  it('restores globalAlpha afterwards, or every later draw fades', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions({ scrim: 0.4 }),
+      background: image,
+    });
+    assert.equal(ctx.globalAlpha, 1);
+  });
+
+  it('still draws the caption on top of the background', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, {
+      ...FRAME,
+      cue: CUE,
+      title: '',
+      progress: 0,
+      options: normalizeOptions(),
+      background: image,
+    });
+    const order = ctx.calls.map((c) => c.op);
+    assert.ok(order.indexOf('drawImage') < order.indexOf('fillText'), '字幕必须画在背景之后');
+    assert.ok(texts(ctx).some((t) => t.includes('你好')));
+  });
+
+  it('paints the theme background when no image is chosen', () => {
+    const ctx = recordingContext();
+    paintFrame(ctx, { ...FRAME, cue: CUE, title: '', progress: 0, options: normalizeOptions() });
+    assert.equal(ctx.calls.filter((c) => c.op === 'drawImage').length, 0);
+  });
+
+  it('ignores a background with no dimensions', () => {
+    // A video element is 0x0 until metadata loads. Drawing it throws
+    // InvalidStateError, which would kill the render loop after recording began.
+    const ctx = recordingContext();
+    assert.doesNotThrow(() =>
+      paintFrame(ctx, {
+        ...FRAME,
+        cue: CUE,
+        title: '',
+        progress: 0,
+        options: normalizeOptions(),
+        background: { tagName: 'IMG', width: 0, height: 0 },
+      })
+    );
   });
 });

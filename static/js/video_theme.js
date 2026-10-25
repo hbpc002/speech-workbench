@@ -147,10 +147,15 @@ export function normalizeOptions(raw = {}) {
     size: size.id,
     sizeScale: size.scale,
     title: String(raw.title || '').trim().slice(0, 60),
-    // A drifting accent glow is the only motion available on a gradient field;
-    // it keeps a long still frame from looking like a frozen video.
+    // A drifting accent glow keeps a long still frame from looking like a
+    // frozen video. With a background image or video it matters even more: the
+    // glow is what stops a single photo from reading as a still.
     motion: raw.motion !== false,
     progressBar: raw.progressBar !== false,
+    // How far to darken a background image/video so captions stay readable on
+    // it. A photo is the one input whose brightness the theme cannot know, so
+    // the scrim is a value the operator can raise rather than a fixed guess.
+    scrim: Number.isFinite(raw.scrim) ? Math.max(0, Math.min(0.85, raw.scrim)) : 0.35,
   };
 }
 

@@ -796,6 +796,28 @@ p.hint {
 
 /* ---- generate video dialog ---------------------------------------------- */
 
+/* The background-asset block. A fieldset rather than a plain div because the
+   controls only apply when a background is chosen, and the box makes that
+   grouping visible without adding a card-in-a-card look. */
+.video-assets {
+  margin: 12px 0;
+  padding: 10px 12px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.video-assets legend {
+  padding: 0 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.video-assets .controls { margin-bottom: 8px; }
+
+.video-assets select { max-width: 170px; }
+
+#tts-video-assetinfo { font-size: 12px; margin: 0 0 6px; }
+
 .video-stage {
   margin: 12px 0;
   background: #000;

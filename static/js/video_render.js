@@ -17,6 +17,7 @@
 
 import { FPS, activeTokenIndex, pickMimeType, tokensRevealed } from './video_timeline.js';
 import { DEFAULT_THEME, captionAnchorY, normalizeOptions, themeOf } from './video_theme.js';
+import { coverRect } from './video_assets.js';
 
 /** Used when a caller passes no options at all, so paintFrame never derefs null. */
 const DEFAULT_PALETTE = themeOf(DEFAULT_THEME);
@@ -67,8 +68,9 @@ export function paintFrame(ctx, {
   progress,
   elapsed = 0,
   options = {},
+  background = null,
 }) {
-  const { palette, position = 'bottom', style = 'plain', sizeScale = 1, motion = true, progressBar = true } = options;
+  const { palette, position = 'bottom', style = 'plain', sizeScale = 1, motion = true, progressBar = true, scrim = 0.35 } = options;
   const theme = palette || DEFAULT_PALETTE;
   const short = Math.min(width, height);
 
@@ -77,6 +79,23 @@ export function paintFrame(ctx, {
   grad.addColorStop(1, theme.bgBottom);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
+
+  // A background image or video frame is drawn over the gradient and then
+  // dimmed by `scrim`. The gradient stays underneath so a half-loaded video, a
+  // transparent PNG, or an asset that failed to decode still has a sane frame
+  // rather than whatever was on the canvas before.
+  if (background) {
+    const rect = coverRect(background.width, background.height, width, height);
+    ctx.drawImage(background, rect.x, rect.y, rect.width, rect.height);
+    if (scrim > 0) {
+      // Drawn in the theme's own dark tone rather than neutral black: a pure
+      // black scrim makes the light themes look like a mistake.
+      ctx.globalAlpha = scrim;
+      ctx.fillStyle = theme.bgBottom;
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalAlpha = 1;
+    }
+  }
 
   // A soft accent glow keeps a mostly-dark frame from looking like a still.
   // With `motion` it drifts, which is the only movement available on a
@@ -200,6 +219,24 @@ function roundRect(ctx, x, y, width, height, radius) {
   ctx.closePath();
 }
 
+/**
+ * The drawable for a background, or null when it is not ready.
+ *
+ * `drawImage` throws `InvalidStateError` on an image with no dimensions or a
+ * video with no frame yet, and that would happen inside the draw loop -- after
+ * recording has started, so the failure surfaces as a broken export rather than
+ * as "the background did not load".
+ */
+function drawableOf(background) {
+  const element = background?.element;
+  if (!element) return null;
+  if (!element.width || !element.height) return null;
+  // A video element reports its intrinsic size before it has a frame to paint;
+  // `readyState < 2` is HAVE_CURRENT_DATA, i.e. nothing to draw yet.
+  if (element.tagName === 'VIDEO' && element.readyState < 2) return null;
+  return element;
+}
+
 /** The cue visible at `seconds`, or null between cues. */
 export function cueAt(cues, seconds) {
   for (const cue of cues || []) {
@@ -258,6 +295,17 @@ export async function renderVideo({
   onProgress = () => {},
   signal,
   audioContext: providedContext,
+  // Background, as one of:
+  //   { kind: 'image', element: HTMLImageElement }
+  //   { kind: 'video', element: HTMLVideoElement }
+  //   null
+  // The dialog owns loading and the object URL; this function only draws and
+  // plays, so it stays callable from a test with a plain canvas.
+  background = null,
+  /** Background music, as a decoded AudioBuffer already at `sampleRate`. */
+  music = null,
+  /** Where music sits relative to the voice. 0.18 is audible under speech. */
+  musicGain = 0.18,
 }) {
   if (!timeline || !timeline.duration) throw new Error('没有可用的音频，先生成语音再试。');
 
@@ -288,12 +336,40 @@ export async function renderVideo({
   source.connect(destination);
   if (monitor) source.connect(audioContext.destination);
 
+  // Background music is summed into the same destination, through its own gain
+  // node so it sits under the voice. Looping is the point: a 30 s track under a
+  // 3 min script has to repeat, and stopping when the track ends would leave
+  // the tail of the video silent.
+  let musicSource = null;
+  if (music) {
+    musicSource = audioContext.createBufferSource();
+    musicSource.buffer = music;
+    musicSource.loop = true;
+    const gain = audioContext.createGain();
+    gain.gain.value = Math.max(0, Math.min(1, musicGain));
+    musicSource.connect(gain);
+    gain.connect(destination);
+    if (monitor) gain.connect(audioContext.destination);
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   const options = normalizeOptions({ ...rawOptions, title });
-  paintFrame(ctx, { width, height, cue: null, title, progress: 0, elapsed: 0, options });
+  // A video background is muted and looped by the dialog, and its first frame
+  // may not be decoded yet; `drawableOf` returns null for anything not ready so
+  // the gradient shows instead of a black rectangle.
+  paintFrame(ctx, {
+    width,
+    height,
+    cue: null,
+    title,
+    progress: 0,
+    elapsed: 0,
+    options,
+    background: drawableOf(background),
+  });
 
   const stream = canvas.captureStream(FPS);
   for (const track of destination.stream.getAudioTracks()) stream.addTrack(track);
@@ -315,10 +391,12 @@ export async function renderVideo({
     if (settled) return;
     settled = true;
     cancelAnimationFrame(frameHandle);
-    try {
-      source.stop();
-    } catch (_) {
-      /* already ended */
+    for (const node of [source, musicSource]) {
+      try {
+        node?.stop();
+      } catch (_) {
+        /* already ended */
+      }
     }
     stream.getTracks().forEach((track) => track.stop());
   };
@@ -334,6 +412,7 @@ export async function renderVideo({
       progress: elapsed / timeline.duration,
       elapsed,
       options,
+      background: drawableOf(background),
     });
     onProgress(Math.min(1, elapsed / timeline.duration));
     frameHandle = requestAnimationFrame(draw);
@@ -354,6 +433,7 @@ export async function renderVideo({
 
   recorder.start(1000);
   source.start();
+  musicSource?.start();
   draw();
 
   try {

@@ -67,6 +67,27 @@
       <label class="vcheck"><input type="checkbox" id="tts-video-monitor" checked> 录制时播放声音</label>
     </div>
 
+    <fieldset class="video-assets">
+      <legend>背景素材</legend>
+
+      <div class="controls">
+        <label>背景 <select id="tts-video-bg"></select></label>
+        <label>背景音乐 <select id="tts-video-music"></select></label>
+        <label>音乐音量 <select id="tts-video-musicgain"></select></label>
+      </div>
+
+      <div class="controls">
+        <label>压暗 <select id="tts-video-scrim"></select></label>
+        <label class="btn-file" for="tts-video-upload">上传素材…</label>
+        <input type="file" id="tts-video-upload" accept="image/*,video/*,audio/*" multiple hidden>
+        <button type="button" class="ghost" id="tts-video-assetdel">删除所选素材</button>
+      </div>
+
+      <p class="note muted" id="tts-video-assetinfo">
+        素材只存在这台设备的浏览器里（IndexedDB），不上传服务器。
+      </p>
+    </fieldset>
+
     <div class="video-stage">
       <canvas id="tts-video-preview" class="video-preview" width="1280" height="720"></canvas>
     </div>
