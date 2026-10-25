@@ -24,7 +24,8 @@ import {
   normalizeOptions,
   themeOf,
 } from './video_theme.js';
-import { coverRect } from './video_assets.js';
+
+import { backgroundSourceRect, backgroundTransform } from './video_background_motion.js';
 import { backgroundIndexAt } from './video_rotation.js';
 
 /** Used when a caller passes no options at all, so paintFrame never derefs null. */
@@ -75,6 +76,9 @@ export function paintFrame(ctx, {
   title,
   progress,
   elapsed = 0,
+  // Length of the whole clip, so the one-way background moves know how far to
+  // travel; omitted by callers that only draw a single instant.
+  duration = 0,
   options = {},
   background = null,
 }) {
@@ -88,6 +92,7 @@ export function paintFrame(ctx, {
     scrim = 0.35,
     animation = 'none',
     animationDuration = 0,
+    backgroundMotion = 'none',
   } = options;
   const theme = palette || DEFAULT_PALETTE;
   const short = Math.min(width, height);
@@ -103,8 +108,16 @@ export function paintFrame(ctx, {
   // transparent PNG, or an asset that failed to decode still has a sane frame
   // rather than whatever was on the canvas before.
   if (background) {
-    const rect = coverRect(background.width, background.height, width, height);
-    ctx.drawImage(background, rect.x, rect.y, rect.width, rect.height);
+    // Motion is expressed as a source rectangle rather than a context
+    // transform: the edge of the image has to land exactly on the edge of the
+    // frame at full pan, and a rectangle makes that a bound to clamp rather than
+    // a composition order to get right.
+    const move = backgroundTransform(backgroundMotion, elapsed, {
+      duration: duration || 0,
+      seed: background.seed || 0,
+    });
+    const rect = backgroundSourceRect(background.width, background.height, width, height, move);
+    ctx.drawImage(background, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, width, height);
     if (scrim > 0) {
       // Drawn in the theme's own dark tone rather than neutral black: a pure
       // black scrim makes the light themes look like a mistake.
@@ -434,6 +447,7 @@ export async function renderVideo({
     title,
     progress: 0,
     elapsed: 0,
+    duration: timeline.duration,
     options,
     background: drawableOf(
       (backgrounds || []).filter(Boolean).length ? pickBackground((backgrounds || []).filter(Boolean), background, rotation, 0, null) : background
@@ -482,6 +496,7 @@ export async function renderVideo({
       title,
       progress: elapsed / timeline.duration,
       elapsed,
+      duration: timeline.duration,
       options,
       background: drawableOf(pickBackground(pool, background, rotation, elapsed, cue)),
     });

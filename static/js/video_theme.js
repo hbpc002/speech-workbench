@@ -12,6 +12,12 @@
 // of the frame edges, because burned-in captions clipped by the encoder are
 // unrecoverable.
 
+import {
+  BACKGROUND_MOTIONS,
+  DEFAULT_BACKGROUND_MOTION,
+  backgroundMotionOf,
+} from './video_background_motion.js';
+
 /** Every theme: a background pair, a type color pair, and an accent. */
 export const THEMES = [
   {
@@ -127,6 +133,11 @@ export const CAPTION_ANIMATIONS = [
 
 export const DEFAULT_CAPTION_ANIMATION = 'none';
 
+// Re-exported so callers that already import the caption options from here get
+// the background ones from the same place, rather than reaching for a second
+// module for a neighbouring control.
+export { BACKGROUND_MOTIONS, DEFAULT_BACKGROUND_MOTION, backgroundMotionOf };
+
 /** Resolve an animation id, falling back to the default. */
 export function animationOf(id) {
   return (
@@ -232,6 +243,11 @@ export function normalizeOptions(raw = {}) {
     scrim: Number.isFinite(raw.scrim) ? Math.max(0, Math.min(0.85, raw.scrim)) : 0.35,
     animation: pickId(CAPTION_ANIMATIONS, raw.animation, DEFAULT_CAPTION_ANIMATION),
     animationDuration: animationOf(raw.animation).duration,
+    // Motion for the background image itself. Separate from `motion`, which is
+    // the glow drifting behind the caption: that one is tied to the theme and
+    // works on a gradient, this one only applies when a photo or video is
+    // behind the text.
+    backgroundMotion: backgroundMotionOf(raw.backgroundMotion).id,
   };
 }
 

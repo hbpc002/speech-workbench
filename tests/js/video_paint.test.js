@@ -34,8 +34,28 @@ function recordingContext() {
     },
     fillRect: (x, y, w, h) =>
       calls.push({ op: 'fillRect', x, y, w, h, fillStyle: ctx.fillStyle, globalAlpha: ctx.globalAlpha }),
-    drawImage: (image, x, y, w, h) =>
-      calls.push({ op: 'drawImage', image, x, y, w, h, globalAlpha: ctx.globalAlpha }),
+    // Both forms: the 5-argument blit and the 9-argument source-rectangle one
+    // the background motion uses.
+    drawImage: (image, a, b, c, d, e, f, g, h) => {
+      const nine = f !== undefined;
+      calls.push(
+        nine
+          ? {
+              op: 'drawImage',
+              image,
+              sx: a,
+              sy: b,
+              sw: c,
+              sh: d,
+              dx: e,
+              dy: f,
+              dw: g,
+              dh: h,
+              globalAlpha: ctx.globalAlpha,
+            }
+          : { op: 'drawImage', image, x: a, y: b, w: c, h: d, globalAlpha: ctx.globalAlpha }
+      );
+    },
     strokeText: (text, x, y) => calls.push({ op: 'strokeText', text, x, y, strokeStyle: ctx.strokeStyle }),
     fillText: (text, x, y) =>
       calls.push({ op: 'fillText', text, x, y, fillStyle: ctx.fillStyle, font: ctx.font }),
@@ -308,9 +328,51 @@ describe('paintFrame with a background', () => {
       background: image,
     });
     const draw = ctx.calls.find((c) => c.op === 'drawImage');
-    assert.equal(draw.w, FRAME.width);
-    assert.equal(draw.h, FRAME.width);
-    assert.ok(draw.y < 0, '方图放进横幅时应上下溢出并被裁掉');
+    // Cropping happens in the source rectangle now, so the destination is
+    // always the whole frame and the aspect is preserved on the source side.
+    assert.deepEqual([draw.dx, draw.dy, draw.dw, draw.dh], [0, 0, FRAME.width, FRAME.height]);
+    // A square photo in a wide frame keeps its aspect by being cropped
+    // vertically: the source region is 800 wide and 450 tall.
+    assert.equal(draw.sw, 800);
+    assert.equal(draw.sh, 450);
+    assert.equal(draw.sy, (800 - 450) / 2, '应居中裁剪');
+  });
+
+  it('moves the background as the clock advances', () => {
+    // The point of the option: at rest the source rect is fixed, and with a
+    // motion the two sample instants must differ -- otherwise the control is
+    // wired to nothing, which a normalizeOptions test cannot catch.
+    const at = (elapsed, motion) => {
+      const ctx = recordingContext();
+      paintFrame(ctx, {
+        ...FRAME,
+        cue: CUE,
+        title: '',
+        progress: 0,
+        elapsed,
+        duration: 60,
+        options: normalizeOptions({ backgroundMotion: motion }),
+        background: image,
+      });
+      return ctx.calls.find((c) => c.op === 'drawImage');
+    };
+    const still = at(0, 'none');
+    assert.deepEqual(
+      [still.sx, still.sy, still.sw, still.sh],
+      [at(30, 'none').sx, at(30, 'none').sy, at(30, 'none').sw, at(30, 'none').sh],
+      '静止时不应移动'
+    );
+
+    const pushed = at(30, 'zoomIn');
+    assert.ok(pushed.sw < still.sw, `推近后取景应更小: ${pushed.sw} vs ${still.sw}`);
+    assert.ok(pushed.sw > 0);
+
+    const panned = [at(0, 'panLeft'), at(60, 'panLeft')];
+    assert.ok(panned[0].sx > panned[1].sx, '平移应从右到左');
+    // And it stays inside the image on both ends.
+    for (const draw of panned) {
+      assert.ok(draw.sx >= 0 && draw.sx + draw.sw <= 800);
+    }
   });
 
   it('dims the background by the scrim so captions stay readable', () => {

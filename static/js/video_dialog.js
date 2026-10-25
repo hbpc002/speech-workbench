@@ -40,9 +40,11 @@ import {
   totalBytes,
 } from './video_assets.js';
 import {
+  BACKGROUND_MOTIONS,
   CAPTION_ANIMATIONS,
   CAPTION_POSITIONS,
   CAPTION_STYLES,
+  DEFAULT_BACKGROUND_MOTION,
   DEFAULT_CAPTION_ANIMATION,
   DEFAULT_CAPTION_STYLE,
   DEFAULT_POSITION,
@@ -134,6 +136,9 @@ function paintPreview() {
     title: currentOptions().title,
     progress: 0,
     elapsed,
+    // The preview shows a moment, not a clip, but the one-way background moves
+    // need the clip length to know how far they have travelled by this instant.
+    duration: timeline.duration,
     options: currentOptions(),
     background: previewBackground(timeline),
   });
@@ -166,6 +171,7 @@ function currentOptions() {
     progressBar: el('tts-video-progressbar').checked,
     scrim: Number(el('tts-video-scrim').value),
     animation: el('tts-video-animation').value,
+    backgroundMotion: el('tts-video-bgmotion').value,
   });
 }
 
@@ -206,6 +212,11 @@ function fillOptions() {
     el('tts-video-animation'),
     CAPTION_ANIMATIONS.map((a) => ({ id: a.id, name: a.label })),
     keep('tts-video-animation', DEFAULT_CAPTION_ANIMATION)
+  );
+  fillSelect(
+    el('tts-video-bgmotion'),
+    BACKGROUND_MOTIONS.map((m) => ({ id: m.id, name: m.label })),
+    keep('tts-video-bgmotion', DEFAULT_BACKGROUND_MOTION)
   );
   fillSelect(
     el('tts-video-rotate'),
@@ -554,6 +565,7 @@ function setStatus(text, { progress = null, busy = false } = {}) {
     'tts-video-motion',
     'tts-video-progressbar',
     'tts-video-animation',
+    'tts-video-bgmotion',
     'tts-video-rotate',
     'tts-video-rotatehold',
     'tts-video-music',
@@ -666,6 +678,7 @@ export function initVideoDialog() {
     'tts-video-style',
     'tts-video-position',
     'tts-video-animation',
+    'tts-video-bgmotion',
     'tts-video-motion',
     'tts-video-progressbar',
   ]) {
