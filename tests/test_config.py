@@ -100,9 +100,14 @@ class TestPublicConfig:
     def test_never_contains_the_credential(self):
         # The regression that matters: a second key existed and only one was
         # being filtered.
-        payload = config.public_config()
-        assert config.LLM_API_KEY not in repr(payload)
-        assert config.API_KEY not in repr(payload) or not config.API_KEY
+        payload = repr(config.public_config())
+        # Guarded on truthiness first: with no key configured these are None,
+        # and `None not in str` raises TypeError rather than passing -- which is
+        # why this test was red on every unkeyed CI run.
+        if config.LLM_API_KEY:
+            assert config.LLM_API_KEY not in payload
+        if config.API_KEY:
+            assert config.API_KEY not in payload
 
     def test_never_contains_the_base_url(self):
         # /healthz is unauthenticated and a self-hosted vLLM origin is not

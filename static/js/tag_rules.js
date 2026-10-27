@@ -84,6 +84,40 @@ export function hasAnyTag(text, tags) {
 }
 
 /**
+ * Every tag string the runtime config knows about, longest first.
+ *
+ * Longest-first matters to `stripKnownTags`: with `[sad]` before `[sad violin]`,
+ * removing the short one leaves a dangling ` violin]` in the text.
+ *
+ * @param {object} config  the `/api/config` payload
+ * @returns {string[]}
+ */
+export function allTagStrings(config) {
+  const control = ((config && config.control_tags) || []).map((item) => item.tag);
+  const rich = ((config && config.rich_tags) || []).map((item) => item.tag);
+  return [...control, ...rich].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * The text as it should be *read*, with the emotion tags taken out.
+ *
+ * Tags steer the synthesis engine; they are not words, and the engine consumes
+ * them before speaking. Anything that renders the script as text -- captions,
+ * a video title, a download filename -- has to strip them first, or `[sad]`
+ * ends up on screen.
+ *
+ * Only tags the config lists are removed, so an ordinary bracket in the script
+ * (`[1]`, `【注】`) survives untouched.
+ *
+ * @param {string} text
+ * @param {string[]} tags
+ */
+export function captionText(text, tags) {
+  if (!tags || !tags.length) return String(text || '').trim();
+  return stripKnownTags(text, tags);
+}
+
+/**
  * Remove every tag in `tags`, leaving all other bracket groups alone.
  *
  * Tidy-up beyond the deletion itself: runs of spaces collapse and any space

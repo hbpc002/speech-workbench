@@ -5,6 +5,8 @@
 // samples/gallery/paraformer-realtime-js/recorder_worklet.js, copied verbatim so
 // the two demos stay comparable.
 
+import { tx } from './db.js';
+
 export const INPUT_SAMPLE_RATE = 16000;
 
 // Voice enrollment is not ASR: qwen-audio-3.0-tts requires >= 24 kHz samples,
@@ -546,43 +548,9 @@ export function floatToInt16(source) {
  * handful of segments would blow the 5 MB string quota.
  *
  * Each generated run is one record holding its own sentence list, so history
- * survives a refresh and nothing is ever overwritten in place.
- *
- * One module owns the database. Two openers disagreeing about the version
- * number is the classic way to end up with a store that exists in one tab and
- * not the next, so the store list lives here rather than at the call sites.
+ * survives a refresh and nothing is ever overwritten in place. The schema
+ * itself lives in `db.js`, which is the only place that opens the database.
  */
-const DB_NAME = 'speech-workbench';
-const DB_VERSION = 4;
-const STORES = ['tts-records', 'voice-previews', 'voice-clones', 'voice-meta', 'voice-list'];
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      for (const name of STORES) {
-        if (!request.result.objectStoreNames.contains(name)) {
-          request.result.createObjectStore(name, { keyPath: 'id' });
-        }
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function tx(storeName, mode, run) {
-  return openDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const transaction = db.transaction(storeName, mode);
-        const request = run(transaction.objectStore(storeName));
-        transaction.oncomplete = () => resolve(request && request.result);
-        transaction.onerror = () => reject(transaction.error);
-      })
-  );
-}
-
 /**
  * Records are read newest-first. `sortKey` lets the clone log order by
  * attempt time while the preview history orders by playback.

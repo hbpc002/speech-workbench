@@ -26,7 +26,9 @@ import { buildInstruction } from '/static/js/instruct.js';
 import { nextSeed, resolveSeed } from '/static/js/seed_policy.js';
 import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, renderPresets, syncTagActions } from '/static/js/tag_dialog.js';
-import { hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
+import { allTagStrings, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
+import { displayNameOf } from '/static/js/voice_aliases.js';
+import { initVideoDialog, openVideoDialog } from '/static/js/video_dialog.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
@@ -152,9 +154,7 @@ function lastControlTag(text) {
 
 /** All tags the current config knows about, as literal strings. */
 function allTags() {
-  const control = (state.config.control_tags || []).map((t) => t.tag);
-  const rich = (state.config.rich_tags || []).map((t) => t.tag);
-  return [...control, ...rich].sort((a, b) => b.length - a.length);
+  return allTagStrings(state.config);
 }
 
 /** Removes recognised emotion tags from `text`; other brackets are left alone. */
@@ -236,7 +236,10 @@ function syncTagActionsForThisTab() {
 function voiceLabel(voiceId, modelId) {
   const catalogue = (state.config.tts_models || []).find((m) => m.id === modelId);
   const voice = (catalogue?.voices || []).find((v) => v.id === voiceId);
-  return voice ? `${voice.name} · ${voice.trait}` : voiceId;
+  const catalogueLabel = voice ? `${voice.name} · ${voice.trait}` : voiceId;
+  // A cloned voice the operator has named reads better as that name than as
+  // `cosyvoice-v3-flash-10201530-8f3a2b1c`.
+  return displayNameOf(voiceId, catalogueLabel);
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -344,6 +347,12 @@ function renderCard(record) {
   actions.append(
     actionButton('播放', { onClick: () => playRecord(record), disabled: done === 0 || isBusy }),
     actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: done === 0 || isBusy }),
+    actionButton('生成视频', {
+      onClick: () => openVideoDialog({ text: record.text, sentences: record.sentences, sampleRate: SAMPLE_RATE }),
+      // Nothing to put on the timeline without finished audio, and the render
+      // reads the same `pcm` the WAV download does.
+      disabled: done === 0 || isBusy,
+    }),
     actionButton('重新生成', { onClick: () => generateRecord(record, true), disabled: isBusy }),
     actionButton(expandLabel, {
       onClick() {
@@ -820,7 +829,12 @@ export function init() {
     renderTagChips();
     syncTagActionsForThisTab();
   });
+  // Cards print the voice name; a rename elsewhere has to show up here too.
+  window.addEventListener('voice-aliases-changed', () => {
+    if (records.length) renderHistory();
+  });
   renderTagChips();
   syncTagActionsForThisTab();
   loadHistory();
+  initVideoDialog();
 }

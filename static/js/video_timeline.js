@@ -1,0 +1,401 @@
+// Turning a finished synthesis record into a video timeline.
+//
+// There is no server-side renderer here on purpose: this app deploys to Vercel,
+// where the function filesystem is read-only outside /tmp and there is no
+// FFmpeg binary. So the "video generation" step composes in the browser --
+// Canvas frames captured by MediaRecorder, with the already-synthesised PCM as
+// the audio track. That is also why this module is pure: the interesting part
+// is the timeline arithmetic, and none of it needs a GPU or a spawn.
+//
+// The cue layout follows `tools/subtitle/subtitle_gen.py` in
+// hbpc002/openmontage-azure-tts (the FFmpeg/Remotion-free part of that
+// project): words are packed into display cues within a word budget and a
+// character budget, and each cue carries the start/end of the words it holds.
+
+import { captionText } from './tag_rules.js';
+
+/** Frame sizes offered in the dialog, as [width, height]. */
+export const PRESETS = [
+  { id: '16:9', label: '横屏 16:9', width: 1280, height: 720 },
+  { id: '9:16', label: '竖屏 9:16', height: 1280, width: 720 },
+  { id: '1:1', label: '方形 1:1', width: 960, height: 960 },
+];
+
+export const DEFAULT_PRESET = '16:9';
+
+/** Caption defaults, matching the reference tool's subtitle defaults. */
+export const MAX_WORDS_PER_CUE = 8;
+export const MAX_CHARS_PER_CUE = 42;
+
+/** Video is captured at 30fps; MediaRecorder tolerates less but looks choppy. */
+export const FPS = 30;
+
+/** Audio pads shorter than this are not worth a cue. */
+const MIN_CUE_SECONDS = 0.05;
+
+/**
+ * How many "words" a piece costs against the per-cue budget.
+ *
+ * `text.split(/\s+/)` returns 1 for any run of Chinese, so every CJK sentence
+ * was billed as a single word no matter how long it was. That made `maxWords`
+ * dead code for the app's primary language: a paragraph of five clauses packed
+ * into one cue and the caption never changed while the audio played on. CJK
+ * characters therefore count as words; Latin still counts on whitespace,
+ * because splitting "hello" into five words would blow the budget on one short
+ * phrase.
+ */
+export function wordCostOf(piece) {
+  const value = String(piece || '');
+  const latin = (value.match(/[A-Za-z0-9'’\-]+/g) || []).length;
+  const cjk = (value.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/g) || []).length;
+  const other = (value.match(/[^\sA-Za-z0-9'’\-\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/g) || []).length;
+  return latin + cjk + other;
+}
+
+/** Resolve a preset id to its dimensions, falling back to the default. */
+export function presetOf(id) {
+  return PRESETS.find((preset) => preset.id === id) || PRESETS.find((p) => p.id === DEFAULT_PRESET);
+}
+
+/**
+ * Sample count of one sentence's PCM, or 0 when there is nothing usable.
+ *
+ * The TTS tab stores `Int16Array` (IndexedDB structured-clones it); a base64
+ * string is accepted too because that is what the unit fixtures build, and the
+ * two are cheap to tell apart. Treating the sample count as a byte count halves
+ * every caption, which is the mistake this function exists to prevent.
+ */
+function samplesOf(pcm) {
+  if (!pcm) return 0;
+  if (typeof pcm === 'string') {
+    // Base64 encodes 3 bytes per 4 characters, minus padding.
+    const padding = pcm.endsWith('==') ? 2 : pcm.endsWith('=') ? 1 : 0;
+    if (!pcm.length) return 0;
+    return Math.max(0, Math.floor((pcm.length * 3) / 4) - padding) / 2;
+  }
+  // Typed arrays carry the sample count directly; the earlier version read
+  // `.length` off a string only, so a real record threw
+  // `pcm.endsWith is not a function` and the dialog never opened.
+  return typeof pcm.length === 'number' ? pcm.length : 0;
+}
+
+/** Seconds of audio in one sentence. */
+export function secondsOfPcm(pcm, sampleRate = 22050) {
+  if (!sampleRate) return 0;
+  return Math.max(0, samplesOf(pcm) / sampleRate);
+}
+
+/**
+ * Split one sentence into caption-sized pieces.
+ *
+ * Sentences here are the synthesis unit, not a display unit: one can be a whole
+ * paragraph, and a single caption holding all of it is unreadable. Chinese has
+ * no spaces, so a naive word split cannot work -- the text is chunked on
+ * punctuation first, then by character budget, and each chunk's share of the
+ * sentence duration is apportioned by its character count. That keeps the
+ * caption roughly in step with the audio, which is all that is needed when
+ * there are no word-level timestamps to begin with.
+ */
+export function splitForCaptions(text, maxChars = MAX_CHARS_PER_CUE) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return [];
+
+  // Punctuation ends a piece; the mark stays with the piece before it.
+  const pieces = trimmed.match(/[^。！？；，、,.!?;]+[。！？；，、,.!?;]?/g) || [trimmed];
+  const out = [];
+  for (const piece of pieces) {
+    const value = piece.trim();
+    if (!value) continue;
+    if (value.length <= maxChars) {
+      out.push(value);
+      continue;
+    }
+    // Still too long: hard-wrap. Mixing Latin text in means a run of spaces is
+    // a better break than a mid-word cut, so prefer the last space when there
+    // is one in the back half.
+    let rest = value;
+    while (rest.length > maxChars) {
+      let cut = maxChars;
+      const space = rest.lastIndexOf(' ', maxChars);
+      if (space > maxChars / 2) cut = space;
+      out.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) out.push(rest);
+  }
+  return out;
+}
+
+/**
+ * Pack caption pieces into cues within the word and character budgets.
+ *
+ * This is the `_build_cues` shape from the reference tool, adapted to the fact
+ * that a sentence here already has a known duration rather than per-word
+ * timestamps.
+ */
+export function buildCues(sentenceTexts, sentenceSeconds, {
+  maxWords = MAX_WORDS_PER_CUE,
+  maxChars = MAX_CHARS_PER_CUE,
+} = {}) {
+  const cues = [];
+  let clock = 0;
+
+  sentenceTexts.forEach((text, index) => {
+    const duration = Math.max(0, Number(sentenceSeconds[index]) || 0);
+    const pieces = splitForCaptions(text, maxChars);
+    if (!pieces.length) {
+      // A silent or empty sentence still occupies its time on the timeline;
+      // skipping the clock advance here would slide every later caption early.
+      clock += duration;
+      return;
+    }
+
+    // Weight each piece by its character count so a long piece is on screen
+    // longer, which is the only signal available without word timings.
+    const totalChars = pieces.reduce((sum, piece) => sum + piece.length, 0) || 1;
+    let buffer = '';
+    let bufferStart = clock;
+    let bufferChars = 0;
+    let bufferWords = 0;
+
+    const flush = (endAt) => {
+      if (!buffer) return;
+      const start = bufferStart;
+      const end = Math.max(endAt, start + MIN_CUE_SECONDS);
+      // Tokens are derived, never passed in: `buildTokens` is the single place
+      // that knows how a cue's text maps onto its own span, and the renderer
+      // reads them for the karaoke styles.
+      const tokens = buildTokens(buffer, start, end);
+      cues.push({
+        index: cues.length + 1,
+        start: round(start),
+        end: round(end),
+        text: buffer,
+        words: tokens,
+      });
+      buffer = '';
+      bufferChars = 0;
+      bufferWords = 0;
+      bufferStart = end;
+    };
+
+    pieces.forEach((piece, pieceIndex) => {
+      const share = (piece.length / totalChars) * duration;
+      const pieceEnd = clock + share;
+      // The word budget exists for Latin text, where eight words is about one
+      // readable line. CJK has no word boundaries, so counting characters
+      // against the same number would break a ten-character sentence in half;
+      // there the character budget and the sentence-final mark decide.
+      const words = hasCJK(piece) ? 0 : wordCostOf(piece) || 1;
+      const wouldExceed =
+        buffer &&
+        (bufferWords + words > maxWords || bufferChars + piece.length > maxChars);
+
+      if (wouldExceed) flush(clock);
+      if (!buffer) bufferStart = clock;
+      buffer = buffer ? `${buffer}${needsSpace(buffer, piece) ? ' ' : ''}${piece}` : piece;
+      bufferChars += piece.length;
+      bufferWords += words;
+      clock = pieceEnd;
+
+      // A sentence-final mark closes the cue. Without this a short three-
+      // sentence line still fits inside the character budget and lands as one
+      // cue, which is the original "字幕不跟着变" complaint: the budget alone
+      // cannot tell one long sentence from three short ones. Closing after the
+      // append matters -- flushing first would strand the piece in a cue of its
+      // own and leave the preceding comma clause with no full stop.
+      if (endsSentence(piece, pieces[pieceIndex + 1])) flush(clock);
+    });
+
+    // Ends at the sentence boundary, which `clock` now points at.
+    flush(clock);
+  });
+
+  return cues;
+}
+
+/** Any Han, kana or hangul character, i.e. a script without word spacing. */
+function hasCJK(text) {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/.test(text);
+}
+
+/**
+ * Does this piece end a sentence?
+ *
+ * The Latin full stop needs the following piece to confirm it: "3." belongs to
+ * "3.14", and splitting there would turn a decimal into a sentence boundary.
+ * The CJK marks are unambiguous and need no lookahead.
+ */
+function endsSentence(piece, next = '') {
+  const value = String(piece || '');
+  if (/[。！？；]$/.test(value)) return true;
+  if (/[!?;]$/.test(value)) return true;
+  if (/\.$/.test(value)) return !/^\d/.test(String(next || '').trim());
+  return false;
+}
+
+/** Whether two pieces need a space between them when joined. */
+function needsSpace(left, right) {
+  // Only between two Latin runs: Chinese pieces butt together, and a space
+  // between two CJK characters is just a visible gap.
+  // A decimal point is a piece boundary to `splitForCaptions` but not a place
+  // for a space: "3." + "14" has to rejoin as "3.14".
+  if (/\.$/.test(left) && /^\d/.test(right)) return false;
+  return /[A-Za-z0-9.!?,;:]$/.test(left) && /^[A-Za-z0-9]/.test(right);
+}
+
+/** Captions are compared and rendered at millisecond precision. */
+function round(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+/**
+ * Break one cue's text into timed tokens.
+ *
+ * Follows openmontage's `subtitle_gen` cue shape: a cue carries its own
+ * `words: [{ word, start, end }]`, which is what `karaoke` and `word_by_word`
+ * render from. There are no real word timings here -- the synthesis API returns
+ * one audio blob per sentence -- so each token gets a share of the cue
+ * proportional to its length. That keeps the highlight roughly in step; it is
+ * an approximation, not a transcript alignment, and calling it anything else
+ * would set the wrong expectation.
+ *
+ * CJK has no spaces, so a "word" is one character there unless the text is
+ * Latin, where a run of letters is one word. Splitting CJK into multi-character
+ * tokens would make the highlight jump in chunks larger than the eye reads.
+ */
+export function buildTokens(text, start, end) {
+  const value = String(text || '');
+  if (!value.trim()) return [];
+
+  // Latin runs stay whole; every other visible character is its own token.
+  const parts = value.match(/[A-Za-z0-9'’\-]+|\s+|[^\s]/g) || [];
+  const tokens = parts.filter((part) => part.trim());
+
+  const total = tokens.reduce((sum, token) => sum + token.length, 0) || 1;
+  const span = Math.max(0, end - start);
+  let clock = start;
+
+  return tokens.map((token) => {
+    const width = (token.length / total) * span;
+    const tokenStart = clock;
+    clock += width;
+    return { word: token, start: round(tokenStart), end: round(clock) };
+  });
+}
+
+/**
+ * Index of the token being spoken at `seconds`.
+ *
+ * Returns -1 when the clock is outside the cue. The renderer uses -1 to mean
+ * "highlight nothing" rather than clamping to a token, because clamping flashes
+ * the last word during the pause after a sentence.
+ */
+export function activeTokenIndex(tokens, seconds) {
+  for (let i = 0; i < (tokens || []).length; i++) {
+    const token = tokens[i];
+    if (seconds >= token.start && seconds < token.end) return i;
+  }
+  return -1;
+}
+
+/** The tokens up to and including the active one, for `word_by_word`. */
+export function tokensRevealed(tokens, seconds) {
+  const index = activeTokenIndex(tokens, seconds);
+  if (index < 0) {
+    // Before the first token starts, show nothing; after the last, show all.
+    const last = (tokens || [])[(tokens || []).length - 1];
+    return last && seconds >= last.end ? (tokens || []).map((t) => t.word).join('') : '';
+  }
+  return (tokens || []).slice(0, index + 1).map((t) => t.word).join('');
+}
+
+/**
+ * Lay out every sentence of a record on one timeline.
+ *
+ * `sentences` is `[{ text, pcm }]` in reading order, exactly as the TTS tab
+ * stores them. Regenerating one sentence changes only its own duration, so the
+ * later cues shift by exactly that much.
+ */
+export function buildTimeline(sentences, sampleRate = 22050, options = {}) {
+  // Only sentences that actually have audio belong on the timeline: a record
+  // can be half-generated, and a caption for a sentence with no sound behind it
+  // would sit a cue over a gap of silence.
+  const rows = (sentences || [])
+    .map((sentence) => ({
+      // Emotion tags (`[sad]`, `[giggles]`) are instructions to the synthesis
+      // engine and were consumed before the audio was made -- they are not
+      // spoken, so they must not be drawn. Stripping happens here rather than
+      // at each call site because every caption in the app comes through this
+      // function, and a second, forgotten path would put them back on screen.
+      text: captionText(sentence?.text || '', options.tagStrings),
+      seconds: secondsOfPcm(sentence?.pcm, sampleRate),
+    }))
+    .filter((row) => row.seconds > 0);
+  const cues = buildCues(
+    rows.map((row) => row.text),
+    rows.map((row) => row.seconds),
+    options
+  );
+  const duration = rows.reduce((sum, row) => sum + row.seconds, 0);
+  return { cues, duration: round(duration), sentences: rows };
+}
+
+/** `mm:ss` for a duration, for the dialog's summary line. */
+export function durationOf(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  return `${minutes}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/**
+ * A filename stem that survives every filesystem.
+ *
+ * The title comes from the record's text, which is arbitrary user prose: `/`,
+ * `:` and newlines are all legal in the text and not in a filename.
+ */
+export function fileNameFor(text, extension = 'webm', now = new Date()) {
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(
+    now.getDate()
+  ).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(
+    2,
+    '0'
+  )}`;
+  const stem = String(text || '')
+    .replace(/[\\/:*?"<>|\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40);
+  return `语音视频-${stem ? `${stem}-` : ''}${stamp}.${extension}`;
+}
+
+/**
+ * Which container to ask MediaRecorder for.
+ *
+ * Safari shipped MediaRecorder only with MP4 support for a long time, and
+ * Chrome prefers WebM; asking for a type the browser cannot produce makes
+ * `new MediaRecorder` throw, so the first supported candidate wins.
+ */
+export const RECORDER_TYPES = [
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+  'video/mp4',
+];
+
+/** The first mime type `isSupported` accepts, or '' when none do. */
+export function pickMimeType(isSupported) {
+  for (const type of RECORDER_TYPES) {
+    try {
+      if (isSupported(type)) return type;
+    } catch (_) {
+      // Some browsers throw on an unknown codec instead of returning false.
+    }
+  }
+  return '';
+}
+
+/** Extension implied by a mime type. */
+export function extensionOf(mimeType) {
+  return String(mimeType || '').includes('mp4') ? 'mp4' : 'webm';
+}

@@ -794,6 +794,154 @@ p.hint {
   margin-top: 12px;
 }
 
+/* ---- generate video dialog ---------------------------------------------- */
+
+/* The background-asset block. A fieldset rather than a plain div because the
+   controls only apply when a background is chosen, and the box makes that
+   grouping visible without adding a card-in-a-card look. */
+.video-assets {
+  margin: 12px 0;
+  padding: 10px 12px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* A fieldset defaults to `min-width: min-content`, which lets one long asset
+     name widen the whole dialog instead of being clipped by its own row. */
+  min-width: 0;
+}
+
+.video-assets legend {
+  padding: 0 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.video-assets .controls { margin-bottom: 8px; }
+
+/* One row per stored asset. Checked rows are the ones drawn -- a multi-select
+   <select> was the first attempt and it hides which items are chosen. */
+.asset-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 168px;
+  /* A 180-character filename must not be able to widen the dialog: flex items
+     default to `min-width: auto`, so the row would grow to fit the name. */
+  min-width: 0;
+  overflow: auto hidden;
+}
+
+.asset-row { min-width: 0; max-width: 100%; }
+
+.asset-list:empty { display: none; }
+
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.asset-row.is-music { opacity: 0.75; }
+
+.asset-row label {
+  display: flex;
+  /* The global `label` is a column (a caption above its control); this one is a
+     single line with a checkbox, a filename and a badge, so it must say so. */
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.asset-row input[type='checkbox'] { flex-shrink: 0; }
+
+.asset-row .asset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-row .asset-meta { color: var(--muted); flex-shrink: 0; }
+
+.asset-row button,
+.asset-row button.ghost {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.6;
+  min-height: 0;
+}
+
+.video-assets select { max-width: 170px; }
+
+#tts-video-assetinfo { font-size: 12px; margin: 0 0 6px; }
+
+.video-stage {
+  margin: 12px 0;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* A 9:16 preview at full dialog width would be taller than the viewport, so
+     the canvas is letterboxed into a fixed box and scaled to fit. */
+  display: flex;
+  justify-content: center;
+}
+
+.video-player {
+  width: 100%;
+  max-height: 46vh;
+  border-radius: 10px;
+  background: #000;
+  margin-bottom: 10px;
+}
+
+.video-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 42vh;
+  width: auto;
+  height: auto;
+}
+
+.video-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.video-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.video-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+.small { font-size: 12px; }
+
+a.btn-file { text-decoration: none; }
+
 /* ---- enrollment clip self-check (tab 4) ------------------------------------ */
 
 .clip-check {
@@ -901,6 +1049,32 @@ p.hint {
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   flex: 0 0 auto;
+}
+
+/* A <label for="file"> dressed as a ghost button: a hidden file input is the
+   only way to open the picker without a native "Choose file" control, and that
+   control cannot be styled to match the toolbar. */
+label.btn-file {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  flex-direction: row;
+  align-items: center;
+  cursor: pointer;
+}
+label.btn-file:hover { border-color: var(--border-hi); }
+
+input[type="search"] { min-width: 180px; }
+
+/* The inline rename box, sized to sit where the label was. */
+input.voice-rename {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
 @media (max-width: 760px) {
