@@ -22,6 +22,8 @@ from . import (
     config,
     ratelimit,
     storage,
+    tts_bridge,
+    video,
     ws_asr,
     ws_chat,
     ws_tts,
@@ -55,6 +57,15 @@ async def lifespan(_: FastAPI):
         print(f"[boot] WARNING: {storage_problem}")
     if not config.API_KEY:
         print("[boot] WARNING: DASHSCOPE_API_KEY is not set, requests will fail")
+    # 渲染器在同一个容器里，启动时把回环 TTS 桥拉起来。端口被占只警告：主应用
+    # 的语音功能不依赖它，短视频页签会自己报"渲染服务不可用"。
+    if config.VIDEO_TTS_BRIDGE and config.SVM_BASE_URL:
+        try:
+            tts_bridge.start(config.VIDEO_TTS_BRIDGE_PORT)
+        except OSError as exc:
+            print(f"[boot] WARNING: TTS bridge could not bind 127.0.0.1:{config.VIDEO_TTS_BRIDGE_PORT}: {exc}")
+    if config.VIDEO_ENABLED and config.SVM_BASE_URL:
+        print(f"[boot] short-video renderer: {config.SVM_BASE_URL}")
     yield
 
 
@@ -172,6 +183,10 @@ app.include_router(api_voices.router, dependencies=[Depends(require_session)])
 # ---- automatic emotion tagging ----------------------------------------------
 
 app.include_router(api_tagger.router, dependencies=[Depends(require_session)])
+
+# ---- short video -----------------------------------------------------------
+
+app.include_router(video.router, dependencies=[Depends(require_session)])
 
 
 @app.get("/media/{name}")

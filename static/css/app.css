@@ -938,6 +938,64 @@ p.hint {
   transition: width 120ms linear;
 }
 
+/* ---- short video tab (tab 5) --------------------------------------------- */
+
+.video-scenes { display: flex; flex-direction: column; gap: 10px; }
+
+.vscene {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Set when 生成 is pressed and this scene has no search terms: Pexels would
+   render a scene with no footage, which looks like a bug in the renderer. */
+.vscene.missing { border-color: var(--warn); }
+
+.vscene-head { display: flex; align-items: center; gap: 8px; }
+
+.vscene-no {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.vscene-head button { margin-left: auto; padding: 3px 10px; font-size: 12px; }
+.vscene-text { min-height: 54px; }
+.vscene-terms { font-size: 13px; }
+
+#video-disabled {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+#video-progress { margin: 4px 0 10px; }
+#video-progress .video-bar { min-width: 120px; }
+/* Indeterminate: the renderer reports status, not progress, so a bar that
+   pretends to know a percentage would be lying. */
+#video-progress.running .video-bar > span {
+  width: 35%;
+  animation: video-sweep 1.4s ease-in-out infinite;
+}
+@keyframes video-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+#video-download { margin: 0 0 10px; }
+#video-download[hidden] { display: none; }
+
 .small { font-size: 12px; }
 
 a.btn-file { text-decoration: none; }

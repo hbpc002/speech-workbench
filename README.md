@@ -4,7 +4,7 @@
 
 所有录音和播放都在浏览器里完成，**API Key 只存在于服务端**。
 
-![四个页签](https://img.shields.io/badge/tabs-4-6c8cff) ![Python](https://img.shields.io/badge/python-3.12-3572A5) ![License](https://img.shields.io/badge/license-MIT-blue) [![GHCR](https://img.shields.io/badge/image-ghcr.io/hbpc002/speech-workbench-2496ed)](https://github.com/hbpc002/speech-workbench/pkgs/container/speech-workbench)
+![五个页签](https://img.shields.io/badge/tabs-5-6c8cff) ![Python](https://img.shields.io/badge/python-3.12-3572A5) ![License](https://img.shields.io/badge/license-MIT-blue) [![GHCR](https://img.shields.io/badge/image-ghcr.io/hbpc002/speech-workbench-2496ed)](https://github.com/hbpc002/speech-workbench/pkgs/container/speech-workbench)
 
 **[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hbpc002/speech-workbench) [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/hbpc002/speech-workbench) [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new?repo=https://github.com/hbpc002/speech-workbench)**
 
@@ -18,6 +18,7 @@
 | 实时语音识别 | 麦克风转字幕，流式增量 | ✅ 实测 |
 | 语音合成 | **6 个模型 / 253 个音色**，语速音调音量可调，情感与场景指令，**情感标签**，历史记录 | ✅ 实测 |
 | 声音复刻 | 录音或上传样本复刻音色，**样本自检 + 自动去静音**，生成带参数、指令与情感标签，历史记录 | 需公网 HTTPS |
+| 短视频 | 口播稿 → **AI 拆场景** → 复刻音色配音 → Pexels 素材 + 字幕 + 音乐，服务端渲染成片，历史记录 | 需一体化镜像 |
 
 ### 声音复刻
 
@@ -33,6 +34,16 @@
 - **列表本机缓存**：音色列表先从 IndexedDB 画出来再后台刷新，不用每次点「刷新列表」
 
 复刻接口不管样本好坏都会返回成功，坏音色要等生成才发现。自检就是为了把这个反馈提前到提交之前 —— 音色配额有限，清理还是不可逆的。
+
+### 短视频
+
+- **AI 拆场景**：稿子按语义切成 1–2 句一场，同时给出 2–3 个英文 Pexels 检索词；模型不可用时退回按句拆分
+- **复刻音色配音**：和语音合成页共用同一套 DashScope 音色，选哪个复刻音色就用哪个
+- **画面**：Pexels 视频素材按检索词匹配，可选竖屏 9:16 / 横屏 16:9、字幕位置、背景音乐与音量
+- **服务端渲染**：Remotion 在容器里渲染，不再占用浏览器；一条 15 秒成片约 1–3 分钟
+- **记录**：播放 / 下载 / 删除，和渲染队列同一份数据
+
+短视频需要 `Dockerfile.allinone` 那个一体化镜像（内含 short-video-maker 的 Node/Remotion 渲染器）。Vercel / Render 的纯 Python 部署没有渲染器，页签会自动置灰。
 
 ### 语音合成
 
@@ -70,17 +81,34 @@ cp .env.example .env      # 填入 DASHSCOPE_API_KEY
 点按钮后填 `DASHSCOPE_API_KEY`，平台会自动读仓库里的 `render.yaml` / `vercel.json` 完成其余配置。声音复刻还要多填一个 `DASHSCOPE_WORKSPACE_ID`（`llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查）—— 百炼现在签发的 Key 都带 `sk-ws-` 前缀，复刻只认工作空间端点。
 
 <details>
-<summary>Docker / 自有服务器</summary>
+<summary>Docker / 自有服务器（含短视频渲染器）</summary>
 
 ```bash
 # 用 CI 自动构建的镜像
 docker pull ghcr.io/hbpc002/speech-workbench:latest
 
-# 或本地构建
+# 或本地构建（纯语音版，无短视频）
 docker build -t speech-workbench .
 
 docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 ```
+
+短视频要一体化镜像：它把 short-video-maker 的 Node/Remotion 渲染器和本应用装进同一个容器，渲染器只监听回环地址，对外仍然只有一个端口。
+
+```bash
+docker build -f Dockerfile.allinone -t speech-workbench:allinone .
+
+docker run -d --network host \
+  -e DASHSCOPE_API_KEY=sk-xxx \
+  -e DASHSCOPE_WORKSPACE_ID=llm-xxxxxxxx \
+  -e PEXELS_API_KEY=xxxxxxxx \
+  -e PUBLIC_BASE_URL=https://your-domain.tld \
+  -v /srv/sw/videos:/app/data/videos \
+  -v /srv/sw/whisper:/app/data/libs/whisper/models \
+  speech-workbench:allinone
+```
+
+镜像默认 3123 对外、3125 给渲染器、8101 给回环 TTS 桥；`--network host` 下这三个端口都在宿主机上，其中只有 3123 应该被反代/发布出去。Pexels 素材缓存在 `/app/data`，Whisper 模型约 540MB，建议像上面一样挂出来，重建容器不用重新下载。
 
 镜像随每次推送到 `main` 自动更新，多架构支持见 [`docs/技术说明.md`](docs/技术说明.md#自动构建镜像github-actions)。
 </details>
@@ -129,7 +157,11 @@ docker run -p 8080:8080 -e DASHSCOPE_API_KEY=sk-xxx speech-workbench
 | `PUBLIC_BASE_URL` | 部署后的公网地址，`local` 存储（Render/Docker/本地）下声音复刻必填 |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 读写 token。在 Vercel 上把 Blob store 通过 **Connect to Project** 连到项目后自动注入，无需手动添加 |
 | `DASHSCOPE_WORKSPACE_ID` | `sk-ws-` 开头的业务空间 Key **必填**，否则声音复刻整页不可用（公共端点返回 `ModelNotFound`）。形如 `llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查 |
-| `LLM_MODELS` / `LLM_MODEL` | AI 标注/写稿的模型。百炼 Key 带模型白名单，不在名单里报 403 `AccessDenied` 而非 404；默认的两个是实测调得通的 |
+| `LLM_MODELS` / `LLM_MODEL` | AI 标注/写稿/拆场景的模型。百炼 Key 带模型白名单，不在名单里报 403 `AccessDenied` 而非 404；默认的两个是实测调得通的 |
+| `PEXELS_API_KEY` | 短视频素材。Pexels 免费 Key 就够用 |
+| `SVM_BASE_URL` | 渲染器地址，默认 `http://127.0.0.1:3125`；留空则短视频页签置灰 |
+| `VIDEO_ENABLED` / `VIDEO_TTS_BRIDGE` | 一体化镜像里默认开；纯 Python 部署置灰 |
+| `VIDEO_RENDERER_PORT` / `PUBLIC_PORT` | 渲染器 / 对外端口，默认 3125 / 3123 |
 
 ## License
 

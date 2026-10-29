@@ -1,0 +1,58 @@
+# 一体化镜像：语音工坊 + short-video-maker（Remotion）在同一个容器里。
+#
+# 为什么从 short-video-maker 的镜像出发，而不是从 python:3.12-slim 出发：
+# 渲染器需要 Node 22、Chrome Headless Shell、ffmpeg、Whisper 二进制和中文字体，
+# 这些上游镜像已经装好且版本互相匹配。我们的应用只多要一个 Python。反过来做，
+# 就得在一个空 Python 镜像里复刻整套 Remotion 运行时，任何一处版本漂移都会
+# 变成"视频渲染到一半退出"，而且很难查。
+#
+# 基础镜像按 digest 固定：latest-tiny 是浮动标签，上游一次重建就可能让下面两个
+# 补丁脚本匹配不上（它们按 dist 的具体文本替换）。升级时先改 digest，再跑一遍
+# 冒烟测试。
+FROM gyoridavid/short-video-maker:latest-tiny@sha256:4cbb6bfd1ceca2a812833ec5773cabc7376e0922bc32cd35fc400bf0f2485c3b
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Debian bookworm 自带 Python 3.11，而 pyproject 声明 >=3.12。用 uv 装一个独立
+# 的 3.12，不碰系统 Python（系统 Python 是镜像里其他脚本在用的）。
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}" \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_LINK_MODE=copy \
+    PYTHONUNBUFFERED=1
+RUN uv python install 3.12
+
+WORKDIR /opt/workbench
+COPY pyproject.toml ./
+COPY server ./server
+COPY static ./static
+# 依赖只从 pyproject 来，不在这里再抄一遍；`-e` 让代码和镜像里的解释器共用
+# 同一个 site-packages，调试时改文件不用重装。
+RUN uv venv --python 3.12 /opt/venv \
+ && uv pip install --python /opt/venv/bin/python --no-cache -e .
+
+# Remotion 的字幕要中文，上游镜像没有 CJK 字体（会渲染成方框）。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-noto-cjk \
+ && fc-cache -f \
+ && rm -rf /var/lib/apt/lists/*
+
+# 两个补丁：Kokoro -> 回环 TTS 桥，以及 Whisper 中文按纯文本输出解析。
+# 它们和底部 digest 绑定，见文件头注释。
+COPY renderer/patch_dist.js renderer/patch_cjk.js /tmp/
+RUN cd /app \
+ && node /tmp/patch_dist.js \
+ && node /tmp/patch_cjk.js
+
+COPY renderer/entrypoint.sh /usr/local/bin/workbench-entrypoint
+RUN chmod +x /usr/local/bin/workbench-entrypoint
+
+ENV VIDEO_ENABLED=1 \
+    VIDEO_TTS_BRIDGE=1 \
+    SVM_BASE_URL=http://127.0.0.1:3125 \
+    VIDEO_RENDERER_PORT=3125 \
+    PUBLIC_PORT=3123
+
+EXPOSE 3123
+ENTRYPOINT ["/usr/local/bin/workbench-entrypoint"]

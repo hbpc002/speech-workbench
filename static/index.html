@@ -37,6 +37,7 @@
       <button class="tab" data-tab="asr">实时语音识别</button>
       <button class="tab" data-tab="tts">语音合成</button>
       <button class="tab" data-tab="voice">声音复刻</button>
+      <button class="tab" data-tab="video">短视频</button>
     </nav>
   </div>
 
@@ -444,6 +445,51 @@
 
       <h2 class="list-title">复刻记录 <span class="muted" id="voice-clone-count"></span></h2>
       <div id="voice-clone-log" class="history"></div>
+    </section>
+
+    <!-- 5. short video -->
+    <section class="panel" data-panel="video">
+      <p class="note muted" id="video-disabled" hidden></p>
+
+      <label class="grow">口播稿
+        <textarea id="video-script" rows="6" placeholder="粘贴口播稿，或先用「语音合成」页的 AI 写稿。"></textarea>
+      </label>
+
+      <div class="controls btn-row">
+        <button id="video-split-ai">AI 拆场景</button>
+        <button class="ghost" id="video-split-local">按句拆分</button>
+        <span class="status" id="video-split-status"></span>
+      </div>
+
+      <div class="video-scenes" id="video-scenes"></div>
+      <p class="muted small" id="video-scene-note">每场一段旁白；检索词用英文（Pexels 按它找画面），2–3 个最稳。</p>
+
+      <div class="controls">
+        <label class="grow">音色 <select id="video-voice"></select></label>
+        <label>背景音乐 <select id="video-music"></select></label>
+        <label>音乐音量 <select id="video-musicvolume"></select></label>
+      </div>
+      <div class="controls">
+        <label>字幕位置 <select id="video-caption"></select></label>
+        <label>画面 <select id="video-orientation"></select></label>
+        <label>结尾留白 <select id="video-padding"></select></label>
+      </div>
+
+      <div class="controls btn-row">
+        <button id="video-create">生成短视频</button>
+        <span class="status" id="video-status"></span>
+      </div>
+
+      <div class="video-progress" id="video-progress" hidden>
+        <div class="video-bar"><span id="video-fill"></span></div>
+        <span class="muted" id="video-progress-text"></span>
+      </div>
+
+      <video id="video-player" class="video-player" controls playsinline hidden></video>
+      <p><a class="btn-file" id="video-download" hidden download>下载视频</a></p>
+
+      <h2 class="list-title">视频记录</h2>
+      <div class="history" id="video-history"></div>
     </section>
   </main>
 

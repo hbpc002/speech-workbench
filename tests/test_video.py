@@ -1,0 +1,218 @@
+"""Short-video proxy: payload normalisation, fallbacks and streaming.
+
+The renderer is faked at the `requests` boundary. What matters here is not the
+renderer (it has its own tests upstream) but the contract this app adds:
+session auth in front of an unauthenticated service, whitelisted options, and a
+scene splitter that still works when the text model does not.
+"""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from server import api_voices, config, llm, video
+from server.main import app
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, headers=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.headers = headers or {}
+        self.ok = 200 <= status_code < 300
+        self.closed = False
+
+    def json(self):
+        return self._payload
+
+    def iter_content(self, chunk_size=0):
+        yield b"fake-mp4-bytes"
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+
+@pytest.fixture
+def no_auth(monkeypatch):
+    monkeypatch.setattr(config, "APP_PASSWORD", "")
+    monkeypatch.setattr(config, "SESSION_SECRET", "")
+
+
+@pytest.fixture
+def renderer(monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    monkeypatch.setattr(config, "VIDEO_ENABLED", True)
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return FakeResponse(201, {"videoId": "vid-1"})
+
+    monkeypatch.setattr(video.requests, "request", fake_request)
+    return calls
+
+
+def test_create_normalises_and_forwards(client, no_auth, renderer):
+    response = client.post(
+        "/api/video",
+        json={
+            "scenes": [
+                {"text": "[excited] 今天聊露营。", "searchTerms": ["camping", " forest ", ""]},
+            ],
+            "config": {"voice": "cosyvoice-v3-flash-1-abc", "music": "chill"},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"videoId": "vid-1"}
+
+    method, url, kwargs = renderer[0]
+    assert method == "POST"
+    assert url == "http://renderer.test/api/short-video"
+    body = kwargs["json"]
+    # Known tags never reach the renderer: it would read them aloud and paint
+    # them into the caption.
+    assert body["scenes"][0]["text"] == "今天聊露营。"
+    assert body["scenes"][0]["searchTerms"] == ["camping", "forest"]
+    assert body["config"]["voice"] == "cosyvoice-v3-flash-1-abc"
+    assert body["config"]["orientation"] == "portrait"
+    assert body["config"]["paddingBack"] == 1500
+
+
+def test_create_rejects_unknown_options(client, no_auth, renderer):
+    base = {"scenes": [{"text": "你好", "searchTerms": ["city"]}], "config": {}}
+    for field, value in (
+        ("music", "dubstep"),
+        ("orientation", "square"),
+        ("captionPosition", "middle"),
+        ("musicVolume", "loud"),
+    ):
+        body = {**base, "config": {**base["config"], field: value}}
+        response = client.post("/api/video", json=body)
+        assert response.status_code == 400, field
+    assert renderer == []
+
+
+def test_create_rejects_blank_scene(client, no_auth, renderer):
+    response = client.post(
+        "/api/video",
+        json={"scenes": [{"text": "[sad]", "searchTerms": []}], "config": {}},
+    )
+    # `[sad]` is a known tag, so the text becomes empty after the strip.
+    assert response.status_code == 400
+    assert renderer == []
+
+
+def test_status_maps_url_when_ready(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    monkeypatch.setattr(
+        video.requests, "request", lambda *a, **k: FakeResponse(200, {"status": "ready"})
+    )
+    response = client.get("/api/video/abc123")
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "abc123",
+        "status": "ready",
+        "url": "/api/video/abc123/file",
+    }
+
+
+def test_status_rejects_bad_id(client, no_auth):
+    assert client.get("/api/video/../../etc/passwd").status_code in (400, 404)
+    assert client.get("/api/video/bad id").status_code == 400
+
+
+def test_options_reports_renderer_down(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    monkeypatch.setattr(config, "VIDEO_ENABLED", True)
+
+    def boom(*args, **kwargs):
+        raise video.requests.ConnectionError("nope")
+
+    monkeypatch.setattr(video.requests, "request", boom)
+    monkeypatch.setattr(api_voices, "list_voices", lambda prefix="": {"voices": []})
+
+    payload = client.get("/api/video/options").json()
+    assert payload["enabled"] is True
+    assert payload["renderer"] == "down"
+    # The built-in table still drives the music picker when the renderer is off.
+    assert "chill" in payload["music"]
+    assert payload["defaults"]["music"] == config.VIDEO_DEFAULT_MUSIC
+
+
+def test_options_off_without_renderer(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "")
+    payload = client.get("/api/video/options").json()
+    assert payload["enabled"] is False
+    assert payload["renderer"] == "off"
+
+
+def test_scenes_falls_back_without_model(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: False)
+    response = client.post(
+        "/api/video/scenes",
+        json={"script": "第一句。第二句！第三句？"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scenes"]
+    assert "warning" in payload
+    assert all(scene["searchTerms"] == [] for scene in payload["scenes"])
+
+
+def test_scenes_uses_model_when_available(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(
+        llm,
+        "chat",
+        lambda *a, **k: '[{"text":"第一句。","searchTerms":["city night"]}]',
+    )
+    payload = client.post("/api/video/scenes", json={"script": "第一句。"}).json()
+    assert payload["scenes"] == [{"text": "第一句。", "searchTerms": ["city night"]}]
+    assert "warning" not in payload
+
+
+def test_scenes_recovers_from_bad_model_output(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: "好的，以下是分镜：")
+    payload = client.post("/api/video/scenes", json={"script": "第一句。第二句。"}).json()
+    assert payload["scenes"]
+    assert "已按句子拆分" in payload["warning"]
+
+
+def test_split_sentences_merges_and_strips():
+    parts = video.split_sentences("[laughing] 你好。今天天气不错。我们出去走走吧。")
+    assert "".join(part["text"] for part in parts) == "你好。今天天气不错。我们出去走走吧。"
+    assert all(len(part["text"]) <= 60 for part in parts)
+
+
+def test_strip_known_tags_keeps_user_brackets():
+    assert video.strip_known_tags("你好 [excited] 世界") == "你好  世界"
+    assert video.strip_known_tags("价格 [199元] 起") == "价格 [199元] 起"
+
+
+def test_file_streams_through(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+
+    def fake_get(url, **kwargs):
+        assert url == "http://renderer.test/api/short-video/vid-9"
+        return FakeResponse(
+            200, headers={"content-type": "video/mp4", "content-length": "14"}
+        )
+
+    monkeypatch.setattr(video.requests, "get", fake_get)
+    response = client.get("/api/video/vid-9/file")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("video/mp4")
+    assert response.content == b"fake-mp4-bytes"
+
+
+def test_file_404_when_not_ready(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    monkeypatch.setattr(
+        video.requests, "get", lambda *a, **k: FakeResponse(404, {"error": "not ready"})
+    )
+    assert client.get("/api/video/vid-9/file").status_code == 404

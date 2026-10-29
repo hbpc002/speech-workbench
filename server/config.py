@@ -337,6 +337,43 @@ def realtime_base_url() -> str:
     return "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 
 
+# ---- short video rendering --------------------------------------------------
+#
+# B 方案把 short-video-maker（Node/Remotion）内置进同一个镜像：渲染进程只监听
+# 回环，浏览器只跟本应用说话。SVM_BASE_URL 为空 = 没装渲染器，短视频页签在
+# /api/config 里报 enabled=false，前端据此隐藏入口，而不是点了才报错。
+SVM_BASE_URL = _env("SVM_BASE_URL", default="").rstrip("/")
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+VIDEO_ENABLED = _env_bool("VIDEO_ENABLED", default=bool(SVM_BASE_URL))
+# 渲染器自己的端口。公共端口由 uvicorn 占，两者不能相同。
+VIDEO_RENDERER_PORT = _env_int("VIDEO_RENDERER_PORT", default=3125)
+# 内置 TTS 桥：渲染器把每场戏的文本 POST 到这里，换成和语音合成页同一套
+# DashScope 音色。只绑 127.0.0.1，容器外拿不到。
+VIDEO_TTS_BRIDGE = _env_bool("VIDEO_TTS_BRIDGE", default=bool(SVM_BASE_URL))
+VIDEO_TTS_BRIDGE_PORT = _env_int("VIDEO_TTS_BRIDGE_PORT", default=8101)
+VIDEO_TIMEOUT_SECONDS = _env_float("VIDEO_TIMEOUT_SECONDS", default=30.0)
+VIDEO_FILE_TIMEOUT_SECONDS = _env_float("VIDEO_FILE_TIMEOUT_SECONDS", default=120.0)
+VIDEO_DEFAULT_VOICE = _env("VIDEO_DEFAULT_VOICE", default=TTS_VOICE)
+VIDEO_MAX_SCENES = max(1, _env_int("VIDEO_MAX_SCENES", default=20))
+VIDEO_MAX_SCRIPT_CHARS = max(100, _env_int("VIDEO_MAX_SCRIPT_CHARS", default=4000))
+VIDEO_DEFAULT_MUSIC = _env("VIDEO_DEFAULT_MUSIC", default="chill")
+VIDEO_MUSIC_TAGS = [
+    "sad", "melancholic", "happy", "euphoric/high", "excited", "chill",
+    "uneasy", "angry", "dark", "hopeful", "contemplative", "funny/quirky",
+]
+VIDEO_CAPTION_POSITIONS = ["top", "center", "bottom"]
+VIDEO_ORIENTATIONS = ["portrait", "landscape"]
+VIDEO_MUSIC_VOLUMES = ["muted", "low", "medium", "high"]
+
+
 def public_config() -> dict:
     """Config safe to hand to the browser (contains no secrets)."""
     return {
@@ -385,4 +422,14 @@ def public_config() -> dict:
         "clone_models": VOICE_CLONE_MODELS,
         "enroll_target_seconds": ENROLL_TARGET_SECONDS,
         "using_workspace_endpoint": bool(WORKSPACE_ID),
+        "video": {
+            "enabled": VIDEO_ENABLED and bool(SVM_BASE_URL),
+            "max_scenes": VIDEO_MAX_SCENES,
+            "max_script_chars": VIDEO_MAX_SCRIPT_CHARS,
+            "music_tags": VIDEO_MUSIC_TAGS,
+            "default_music": VIDEO_DEFAULT_MUSIC,
+            "captions": VIDEO_CAPTION_POSITIONS,
+            "orientations": VIDEO_ORIENTATIONS,
+            "music_volumes": VIDEO_MUSIC_VOLUMES,
+        },
     }

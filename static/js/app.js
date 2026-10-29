@@ -311,6 +311,7 @@ const TAB_MODULES = [
   '/static/js/tab_asr.js',
   '/static/js/tab_tts.js',
   '/static/js/tab_voice.js',
+  '/static/js/tab_video.js',
 ];
 
 async function start() {
