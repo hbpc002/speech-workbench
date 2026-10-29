@@ -28,6 +28,9 @@ dependencies = [
 [project.optional-dependencies]
 # Needed only to run the test suite.
 dev = ["pytest>=8.0"]
+# 无人物素材过滤（一体化镜像里装）。纯 Python 部署不装也能跑：短视频页签本来
+# 就需要渲染器，渲染器不在时这个功能用不到。
+people = ["onnxruntime>=1.18,<2", "pillow>=10,<12"]
 
 [tool.vercel]
 # Vercel 要求 module:variable 格式，不是文件路径。

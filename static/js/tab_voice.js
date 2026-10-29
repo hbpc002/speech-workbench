@@ -49,7 +49,7 @@ import { aiConfigured, createTagTagger, fillSelect, openHelp, syncTagActions } f
 import { MAX_SECONDS, TARGET_SECONDS, analyze, assess, trimSilence } from '/static/js/clip_check.js';
 import { allKnownTags, hasTags, renderChips, stripTags, tagChips } from '/static/js/tag_input.js';
 import { hydrateVoiceAliases, rememberAlias } from '/static/js/voice_aliases.js';
-import { initVideoDialog, openVideoDialog } from '/static/js/video_dialog.js';
+import { requestShortVideo } from '/static/js/short_video_request.js';
 import { MAX_NAME, autoNameRows, createdMsOf, idOf, parseNames, serializeNames, visibleRows } from '/static/js/voice_view.js';
 import { voicePrefixFor } from '/static/js/voice_prefix.js';
 
@@ -1368,13 +1368,13 @@ function renderHistory() {
       actionButton('播放', { onClick: () => playRecord(record), disabled: !record.chunks.length || busy }),
       actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: !record.chunks.length || busy }),
       actionButton('生成视频', {
-        // Sample rate comes from runtime config, not the dialog's default: the
-        // clone tab records at whatever the server advertises, and a mismatch
-        // would stretch every caption.
-        onClick: () => openVideoDialog({
+        // Same hand-off as the synthesis tab: the short-video tab re-splits
+        // the text and renders server-side. The record's model and voice are
+        // passed through so the re-synthesis keeps this cloned voice.
+        onClick: () => requestShortVideo({
           text: record.text,
-          sentences: previewSentences(record),
-          sampleRate: state.config.tts_sample_rate,
+          model: record.model,
+          voice: record.voice,
         }),
         disabled: !record.chunks.length || busy,
       }),
@@ -1648,7 +1648,6 @@ export function init() {
   renderHistory();
   renderCloneLog();
   checkCloneReadiness();
-  initVideoDialog();
 }
 
 /**

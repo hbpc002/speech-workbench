@@ -176,6 +176,9 @@ _SCENES_PROMPT = """你是短视频分镜师。把下面的口播稿切成适合
 - 每场 1–2 句，整场不超过 45 个字，按语义切，不要按字数硬切。
 - 每场给 2–3 个英文 Pexels 视频检索词：具体、可视化的名词短语（如 "coffee pouring"、
   "city night traffic"），不要抽象概念、不要人名、不要同一个词反复出现。
+- **检索词必须避开人物**：不要出现 man / woman / person / people / hands / face /
+  portrait / crowd / worker 这类词，也不要描述有人物动作的场景；只描述空镜、
+  物品、自然、纹理、光影。
 - 保留原稿的说话顺序和措辞，不要改写、不要增删信息。
 - 去掉 [excited] 这类情感标签。
 

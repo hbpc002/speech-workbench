@@ -365,6 +365,21 @@ VIDEO_DEFAULT_VOICE = _env("VIDEO_DEFAULT_VOICE", default=TTS_VOICE)
 VIDEO_MAX_SCENES = max(1, _env_int("VIDEO_MAX_SCENES", default=20))
 VIDEO_MAX_SCRIPT_CHARS = max(100, _env_int("VIDEO_MAX_SCRIPT_CHARS", default=4000))
 VIDEO_DEFAULT_MUSIC = _env("VIDEO_DEFAULT_MUSIC", default="chill")
+
+# ---- 无人物素材 --------------------------------------------------------------
+#
+# Pexels 没有"不要人物"的筛选项，所以渲染器选素材前会把候选发到回环服务，
+# 由 server/people.py 做 slug 黑名单 + YOLOv8n 预览帧检测。模型是可选的：
+# 没装 onnxruntime 或模型文件时服务仍启动，但放行所有候选并在启动日志报警。
+PEOPLE_FILTER_ENABLED = _env_bool("PEOPLE_FILTER_ENABLED", default=bool(SVM_BASE_URL))
+PEOPLE_FILTER_PORT = _env_int("PEOPLE_FILTER_PORT", default=8102)
+PEOPLE_MODEL_PATH = _env("PEOPLE_MODEL_PATH", default="/opt/models/yolov8n.onnx")
+PEOPLE_CONFIDENCE = _env_float("PEOPLE_CONF", default=0.35)
+PEOPLE_MAX_IMAGES = max(1, _env_int("PEOPLE_MAX_IMAGES", default=3))
+PEOPLE_IMAGE_TIMEOUT = _env_float("PEOPLE_IMAGE_TIMEOUT", default=8.0)
+PEOPLE_MAX_CANDIDATES = max(1, _env_int("PEOPLE_MAX_CANDIDATES", default=80))
+PEOPLE_WORKERS = max(1, _env_int("PEOPLE_WORKERS", default=4))
+PEOPLE_CACHE_SIZE = max(0, _env_int("PEOPLE_CACHE_SIZE", default=2048))
 VIDEO_MUSIC_TAGS = [
     "sad", "melancholic", "happy", "euphoric/high", "excited", "chill",
     "uneasy", "angry", "dark", "hopeful", "contemplative", "funny/quirky",

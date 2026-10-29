@@ -18,6 +18,7 @@ import { api } from '/static/js/http.js';
 import { error as logError } from '/static/js/debug_log.js';
 import { fillSelect } from '/static/js/tag_dialog.js';
 import { MAX_SCENES, splitLocal, termsToText, textToTerms } from '/static/js/video_split.js';
+import { SHORT_VIDEO_EVENT } from '/static/js/short_video_request.js';
 
 const DRAFT_KEY = 'video.draft';
 const POLL_MS = 3000;
@@ -54,6 +55,8 @@ let options = null;
 let polling = null;
 let currentVideoId = null;
 let draftTimer = null;
+/** A record handed over from the synthesis tab, waiting for options to load. */
+let pendingPrefill = null;
 
 function setStatus(text, kind) {
   const node = el('video-status');
@@ -290,6 +293,11 @@ function fillOptions() {
     if (voice.status && voice.status !== 'OK') continue;
     add({ ...voice, name: voiceName(voice) });
   }
+  // A `model:voice` from a synthesis record is not in the cloned list; keep it
+  // selectable so a reload does not silently switch the voice.
+  if (draft.voice && !seen.has(draft.voice)) {
+    add({ id: draft.voice, name: `上次使用 · ${draft.voice}` });
+  }
   fillSelect(el('video-voice'), voices, draft.voice || voices[1]?.id || voices[0]?.id);
 }
 
@@ -348,7 +356,7 @@ function historyCard(video) {
   title.textContent = `视频 …${shortId(video.id)}`;
   const sub = document.createElement('div');
   sub.className = 'hsub';
-  sub.textContent = video.status === 'ready' ? 'Pexels 素材 + 复刻音色' : '渲染中，通常 1–3 分钟';
+  sub.textContent = video.status === 'ready' ? 'Pexels 素材 + 语音配音' : '渲染中，通常 1–3 分钟';
   meta.append(title, sub);
 
   const badges = document.createElement('div');
@@ -521,6 +529,38 @@ async function createVideo() {
   }
 }
 
+// ---- hand-off from a synthesis record -------------------------------------
+
+/**
+ * Fill the tab from a record and split it immediately.
+ *
+ * The voice is kept as `model:voice`: the renderer re-synthesises the text,
+ * and the bridge needs the model to know which endpoint a preset voice belongs
+ * to. Without it every record would fall back to the default clone.
+ */
+function applyPrefill() {
+  if (!pendingPrefill || !options?.enabled) return;
+  const detail = pendingPrefill;
+  pendingPrefill = null;
+
+  el('video-script').value = detail.text;
+  if (detail.model && detail.voice) {
+    const id = `${detail.model}:${detail.voice}`;
+    const select = el('video-voice');
+    if (![...select.options].some((option) => option.value === id)) {
+      const optionEl = document.createElement('option');
+      optionEl.value = id;
+      optionEl.textContent = `语音记录 · ${detail.voice}`;
+      select.appendChild(optionEl);
+    }
+    select.value = id;
+  }
+  saveDraft();
+  el('video-split-status').textContent = '来自语音记录，正在拆场景…';
+  el('video-split-status').dataset.state = 'connecting';
+  splitWithAI();
+}
+
 // ---- init -----------------------------------------------------------------
 
 export function init() {
@@ -545,6 +585,12 @@ export function init() {
     el(id).addEventListener('change', saveDraft);
   }
 
+  window.addEventListener(SHORT_VIDEO_EVENT, (event) => {
+    pendingPrefill = event.detail || null;
+    document.querySelector('[data-tab="video"]')?.click();
+    applyPrefill();
+  });
+
   const draft = readDraft();
   if (draft.script) el('video-script').value = draft.script;
   if (Array.isArray(draft.scenes) && draft.scenes.length) {
@@ -566,6 +612,7 @@ export function init() {
       }
       fillOptions();
       loadHistory();
+      applyPrefill();
     })
     .catch((error) => {
       disabled(`短视频不可用：${error.message}`);

@@ -24,9 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import dashscope
 from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer
 
-from . import config, redact
+from . import config, redact, voices
 
 MAX_TEXT_CHARS = 4000
+
+# 渲染器传来的 voice 有两种合法写法：复刻音色 id，或 `model:voice`（来自语音
+# 合成记录）。后者必须校验 model，否则等于把 DashScope 的模型名开放给调用方。
+_TTS_MODELS = {item["id"] for item in voices.catalogue()} | set(config.VOICE_CLONE_MODELS)
 # 按最长前缀匹配，避免 `cosyvoice-v3-flash` 抢走 `cosyvoice-v3-flash-xxx` 的匹配。
 _MODELS_BY_LENGTH = sorted(config.VOICE_CLONE_MODELS, key=len, reverse=True)
 _AUDIO_FORMAT = AudioFormat.MP3_24000HZ_MONO_256KBPS
@@ -36,10 +40,16 @@ def resolve_voice(name: str) -> tuple[str, str]:
     """把渲染器传来的 voice 解析成 (model, voice_id)。
 
     复刻音色的 id 形如 `cosyvoice-v3-flash-10222032-<hash>`，模型就是去掉
-    末尾两段。解析不出来的一律回落默认音色：渲染器的旧界面还会发 `af_heart`
-    这类 Kokoro 名字，让它们失败只会换来一条无解的错误。
+    末尾两段。`model:voice` 来自语音合成记录，模型表里没有的一律拒绝。都解析
+    不出来就回落默认音色：渲染器的旧界面还会发 `af_heart` 这类 Kokoro 名字，
+    让它们失败只会换来一条无解的错误。
     """
     candidate = (name or "").strip()
+    if ":" in candidate:
+        model, _, voice_id = candidate.partition(":")
+        model, voice_id = model.strip(), voice_id.strip()
+        if model in _TTS_MODELS and voice_id:
+            return model, voice_id
     for model in _MODELS_BY_LENGTH:
         if candidate.startswith(f"{model}-"):
             return model, candidate

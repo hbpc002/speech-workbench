@@ -20,6 +20,7 @@ from . import (
     api_voices,
     auth,
     config,
+    people_service,
     ratelimit,
     storage,
     tts_bridge,
@@ -66,6 +67,11 @@ async def lifespan(_: FastAPI):
             print(f"[boot] WARNING: TTS bridge could not bind 127.0.0.1:{config.VIDEO_TTS_BRIDGE_PORT}: {exc}")
     if config.VIDEO_ENABLED and config.SVM_BASE_URL:
         print(f"[boot] short-video renderer: {config.SVM_BASE_URL}")
+    if config.PEOPLE_FILTER_ENABLED and config.SVM_BASE_URL:
+        try:
+            people_service.start(config.PEOPLE_FILTER_PORT)
+        except OSError as exc:
+            print(f"[boot] WARNING: people filter could not bind 127.0.0.1:{config.PEOPLE_FILTER_PORT}: {exc}")
     yield
 
 

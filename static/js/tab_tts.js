@@ -28,7 +28,7 @@ import { createScriptBox } from '/static/js/script_box.js';
 import { aiConfigured, createTagTagger, fillSelect, openHelp, renderPresets, syncTagActions } from '/static/js/tag_dialog.js';
 import { allTagStrings, hasAnyTag, stripKnownTags } from '/static/js/tag_rules.js';
 import { displayNameOf } from '/static/js/voice_aliases.js';
-import { initVideoDialog, openVideoDialog } from '/static/js/video_dialog.js';
+import { requestShortVideo } from '/static/js/short_video_request.js';
 
 const SAMPLE_RATE = 22050;
 const MAX_RECORDS = 30;
@@ -348,9 +348,11 @@ function renderCard(record) {
     actionButton('播放', { onClick: () => playRecord(record), disabled: done === 0 || isBusy }),
     actionButton('下载', { className: '', onClick: () => downloadRecord(record), disabled: done === 0 || isBusy }),
     actionButton('生成视频', {
-      onClick: () => openVideoDialog({ text: record.text, sentences: record.sentences, sampleRate: SAMPLE_RATE }),
-      // Nothing to put on the timeline without finished audio, and the render
-      // reads the same `pcm` the WAV download does.
+      // The short-video tab takes over: it re-splits the script, picks
+      // person-free Pexels clips and renders on the server. The browser-side
+      // dialog is no longer the destination here.
+      onClick: () => requestShortVideo({ text: record.text, model: record.model, voice: record.voice }),
+      // Nothing to put on the timeline without finished audio.
       disabled: done === 0 || isBusy,
     }),
     actionButton('重新生成', { onClick: () => generateRecord(record, true), disabled: isBusy }),
@@ -836,5 +838,4 @@ export function init() {
   renderTagChips();
   syncTagActionsForThisTab();
   loadHistory();
-  initVideoDialog();
 }

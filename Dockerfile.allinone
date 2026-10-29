@@ -30,7 +30,7 @@ COPY static ./static
 # 依赖只从 pyproject 来，不在这里再抄一遍；`-e` 让代码和镜像里的解释器共用
 # 同一个 site-packages，调试时改文件不用重装。
 RUN uv venv --python 3.12 /opt/venv \
- && uv pip install --python /opt/venv/bin/python --no-cache -e .
+ && uv pip install --python /opt/venv/bin/python --no-cache -e ".[people]"
 
 # Remotion 的字幕要中文，上游镜像没有 CJK 字体（会渲染成方框）。
 RUN apt-get update \
@@ -38,18 +38,29 @@ RUN apt-get update \
  && fc-cache -f \
  && rm -rf /var/lib/apt/lists/*
 
-# 两个补丁：Kokoro -> 回环 TTS 桥，以及 Whisper 中文按纯文本输出解析。
-# 它们和底部 digest 绑定，见文件头注释。
-COPY renderer/patch_dist.js renderer/patch_cjk.js /tmp/
+# 人物检测模型。约 12MB，只用来回答"这一帧有没有人"，不参与渲染。
+# 上游 ultralytics 的 release 只发 .pt，不发 .onnx；这是社区导出的标准
+# YOLOv8n ONNX（输入 1x3x640x640，输出 1x84x8400），按 sha256 固定。
+RUN mkdir -p /opt/models \
+ && curl -fsSL --retry 3 -o /opt/models/yolov8n.onnx \
+      "https://huggingface.co/salim4n/yolov8n-detect-onnx/resolve/main/yolov8n-onnx-web/yolov8n.onnx" \
+ && echo "162ec5e9d2886fc411e4b81811c731e81a72c8f85571de1e0ab040833d92d4f2  /opt/models/yolov8n.onnx" | sha256sum -c -
+
+# 三个补丁：Kokoro -> 回环 TTS 桥、Whisper 中文纯文本解析、Pexels 选片前过人物
+# 过滤。它们和底部 digest 绑定，见文件头注释。
+COPY renderer/patch_dist.js renderer/patch_cjk.js renderer/patch_people.js /tmp/
 RUN cd /app \
  && node /tmp/patch_dist.js \
- && node /tmp/patch_cjk.js
+ && node /tmp/patch_cjk.js \
+ && node /tmp/patch_people.js
 
 COPY renderer/entrypoint.sh /usr/local/bin/workbench-entrypoint
 RUN chmod +x /usr/local/bin/workbench-entrypoint
 
 ENV VIDEO_ENABLED=1 \
     VIDEO_TTS_BRIDGE=1 \
+    PEOPLE_FILTER_ENABLED=1 \
+    PEOPLE_MODEL_PATH=/opt/models/yolov8n.onnx \
     SVM_BASE_URL=http://127.0.0.1:3125 \
     VIDEO_RENDERER_PORT=3125 \
     PUBLIC_PORT=3123

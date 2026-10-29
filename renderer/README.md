@@ -16,6 +16,14 @@
 3. `components/videos/{Portrait,Landscape}Video.js`：字体加 "Noto Sans CJK SC"，
    中文句子之间不加空格（拉丁语系按空格换行，中文按字换行）。
 
+## patch_people.js
+
+`Pexels.js` 选片前把候选（id / slug / 封面 / 预览帧）POST 给回环
+`127.0.0.1:8102/people`，只保留返回的 `allowed`。目的：不让人物出现在素材里。
+Pexels 没有这个筛选项，过滤在 `server/people.py`（slug 黑名单 + YOLOv8n 预览帧检测）。
+一条候选都不剩时抛 `No videos found`，让上层换检索词；过滤服务不可达时退回
+本地 slug 黑名单，不让功能整体失败。jokerTerms 也顺带扩成自然/空镜类。
+
 ## patch_cjk.js
 
 `Whisper.js` 的中文字幕解析。`@remotion/install-whisper-cpp` 的默认解析会把一个
