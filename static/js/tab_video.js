@@ -55,6 +55,15 @@ let options = null;
 let polling = null;
 let currentVideoId = null;
 let draftTimer = null;
+/**
+ * Whether the option selects exist yet.
+ *
+ * init() restores the draft's scenes before /api/video/options answers. That
+ * restore used to call saveDraft() with every select empty, which overwrote
+ * the saved voice/music with "" -- the next reload then forgot them. Nothing
+ * is written until fillOptions() has run.
+ */
+let draftReady = false;
 /** A record handed over from the synthesis tab, waiting for options to load. */
 let pendingPrefill = null;
 
@@ -78,6 +87,7 @@ function disabled(message) {
 // ---- draft ----------------------------------------------------------------
 
 function saveDraft() {
+  if (!draftReady) return;
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     try {
@@ -299,6 +309,7 @@ function fillOptions() {
     add({ id: draft.voice, name: `上次使用 · ${draft.voice}` });
   }
   fillSelect(el('video-voice'), voices, draft.voice || voices[1]?.id || voices[0]?.id);
+  draftReady = true;
 }
 
 // ---- history --------------------------------------------------------------
