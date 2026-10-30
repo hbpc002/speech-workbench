@@ -376,3 +376,21 @@ def test_create_rejects_bad_audio_token(client, no_auth, renderer):
     )
     assert response.status_code == 400
     assert renderer == []
+
+
+def test_create_accepts_long_model_voice_pairs(client, no_auth, renderer):
+    """qwen 的复刻音色加 model: 前缀是 91 字符，旧的 80 上限会误拦。"""
+    voice = (
+        "qwen-audio-3.0-tts-flash:"
+        "qwen-audio-3.0-tts-flash-10282057-683db9a94bbb44709d1d7e86ce169cec"
+    )
+    assert len(voice) > 80
+    response = client.post(
+        "/api/video",
+        json={
+            "scenes": [{"text": "你好", "searchTerms": ["city"]}],
+            "config": {"voice": voice},
+        },
+    )
+    assert response.status_code == 200
+    assert renderer[-1][2]["json"]["config"]["voice"] == voice

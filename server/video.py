@@ -58,7 +58,8 @@ class ScenePayload(BaseModel):
 
 
 class RenderPayload(BaseModel):
-    voice: str = Field(default="", max_length=80)
+    # `model:voice`：qwen 的复刻音色加模型前缀能到 91 字符，80 会拦掉合法音色。
+    voice: str = Field(default="", max_length=160)
     music: str = Field(default="", max_length=32)
     captionPosition: str = Field(default="bottom", max_length=16)
     orientation: str = Field(default="portrait", max_length=16)
@@ -439,7 +440,7 @@ async def suggest_terms(payload: TermsPayload) -> dict:
 @router.post("")
 def create_video(payload: CreateVideoPayload) -> dict:
     voice = payload.config.voice.strip() or config.VIDEO_DEFAULT_VOICE
-    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", voice):
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", voice):
         raise HTTPException(status_code=400, detail="音色 id 不合法")
     _check_choice(payload.config.captionPosition, config.VIDEO_CAPTION_POSITIONS, "字幕位置")
     _check_choice(payload.config.orientation, config.VIDEO_ORIENTATIONS, "画面方向")
