@@ -193,40 +193,28 @@ REALTIME_VAD_MODES = ["server_vad", "smart_turn"]
 SILENCE_DURATIONS = [600, 1000, 1200, 1500, 2000]
 
 
-# ---- 文本标注用的 LLM -------------------------------------------------------
+# ---- 文本标注 / 拆场景用的 LLM ----------------------------------------------
 #
-# 任意 OpenAI 兼容端点：百炼 compatible-mode、DeepSeek、Kimi、GLM、OpenRouter、
-# one-api 聚合网关、自建 vLLM 都可以。默认指向百炼的兼容模式，所以不配任何东西
-# 时也能直接用现有的 DASHSCOPE_API_KEY。换厂商只改下面三项，前后端代码不动。
+# 任意 OpenAI 兼容端点，默认走 magpie 聚合网关的云端入口（模型 group/never-stuck，
+# 显示名「永不卡住」）。换厂商只改下面三项，前后端代码不动。
 #
-# 刻意走裸 HTTP 而不是 dashscope.Generation：那个 SDK 只会打百炼。
+# 注意 Key 是**独立**的：magpie 不认百炼的 DASHSCOPE_API_KEY，所以这里不再回落到
+# API_KEY。没配 LLM_API_KEY 时，AI 标注 / 写稿 / 拆场景按钮会置灰并说明原因，
+# 语音合成、语音识别、短视频的手动流程都不受影响。
+#
+# 刻意走裸 HTTP 而不是任何厂商 SDK：magpie、百炼 compatible-mode、DeepSeek、
+# Kimi、GLM、OpenRouter、one-api、自建 vLLM 都答同一套 /chat/completions。
 LLM_BASE_URL = _env(
-    "LLM_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1"
+    "LLM_BASE_URL", default="https://magpie.059618.xyz/v1"
 ).rstrip("/")
-
-# 可以和语音服务用不同的 Key。不设时复用 DASHSCOPE_API_KEY。
-LLM_API_KEY = _env("LLM_API_KEY", default=API_KEY)
+LLM_API_KEY = _env("LLM_API_KEY", default="")
 
 # "id:显示名,id:显示名"，显示名只给前端下拉用，id 才是发给上游的。
 #
-# 默认只列实测能调通的模型，而且是两个 Flash 档的同代替代品。原因是百炼现在
-# 新签发的 Key（`sk-ws-` 开头的业务空间 Key）**带模型白名单**：不在名单里的模型
-# 不是 404「模型不存在」，而是 403 `AccessDenied: Access denied by API-Key
-# restrictions.`。实测同一把 Key 上 qwen3.8-flash / qwen3.7-flash 返回 200，
-# 而 qwen-flash / qwen-plus / qwen3.6-flash / qwen-max / deepseek-* / kimi-* /
-# glm-* 一律 403。所以列表里放一个调不通的 id，等于在前端下拉里摆一个点了就报错
-# 的选项 —— 拿不到权限的人只能在控制台改 LLM_MODELS 才可能用到别的模型。
-#
-# `GET /compatible-mode/v1/models` 不能用来判断可用性：它返回的是全站目录，
-# 不做 Key 的白名单过滤，看起来什么都有。
-#
-# 白名单在 百炼控制台 → API-KEY 管理 → 选中这把 Key 里配。放开之后把更多
-# `id:显示名` 追加到 LLM_MODELS 即可，前后端代码不用动。
+# magpie 的 `group/never-stuck` 是一个路由组：网关会在多个上游之间挑一个能用的
+# 模型。id 必须原样发，不能改写成具体模型名，否则等于绕过网关的容错。
 LLM_MODELS = _parse_models(
-    _env(
-        "LLM_MODELS",
-        default="qwen3.8-flash:均衡,qwen3.7-flash:备用",
-    )
+    _env("LLM_MODELS", default="group/never-stuck:永不卡住")
 )
 LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")
 

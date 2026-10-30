@@ -73,6 +73,10 @@ class ScenesPayload(BaseModel):
     model: str | None = None
 
 
+class TermsPayload(BaseModel):
+    texts: list[str] = Field(min_length=1, max_length=config.VIDEO_MAX_SCENES)
+
+
 # ---- 渲染器客户端 ----------------------------------------------------------
 
 
@@ -187,6 +191,48 @@ _SCENES_PROMPT = """你是短视频分镜师。把下面的口播稿切成适合
 
 口播稿：
 """
+
+
+_TERMS_PROMPT = """为下面每一段短视频旁白生成 2–3 个英文 Pexels 视频检索词。
+
+要求：
+- 具体、可视化的名词短语（如 "coffee pouring"、"forest sunlight"），不要抽象概念。
+- **不要人物**：不要出现 man / woman / person / people / hands / face / portrait /
+  crowd / worker 等词，也不要描述人物动作；只写空镜、物品、自然、纹理、光影。
+- 每段一组，顺序与输入一致，不要改写旁白。
+
+只输出 JSON 数组，长度等于输入段数，每项是字符串数组：
+[["coffee pouring", "ceramic cup"], ["forest sunlight"]]
+
+旁白数组：
+"""
+
+
+def _parse_terms(raw: str, expected: int) -> list[list[str]]:
+    text = _FENCE.sub("", raw or "").strip()
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        raise ValueError("响应里没有 JSON 数组")
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, list):
+        raise ValueError("响应不是数组")
+
+    out: list[list[str]] = []
+    for item in payload:
+        if isinstance(item, str):
+            item = [item]
+        terms = []
+        for term in item if isinstance(item, list) else []:
+            term = str(term).strip()
+            if term and term.lower() not in {t.lower() for t in terms}:
+                terms.append(term[:60])
+        out.append(terms[:_MAX_SEARCH_TERMS])
+
+    # 模型少给/多给都按输入段数对齐：少给的补空数组，多给的丢掉，不让前端
+    # 因为一个数组长度就对不上场景。
+    if len(out) < expected:
+        out.extend([[] for _ in range(expected - len(out))])
+    return out[:expected]
 
 
 def _parse_scenes(raw: str) -> list[dict]:
@@ -317,6 +363,45 @@ async def split_scenes(payload: ScenesPayload) -> dict:
             "scenes": split_sentences(script),
             "warning": f"AI 拆分失败（{message}），已按句子拆分，检索词请手动填写",
         }
+
+
+@router.post("/terms")
+async def suggest_terms(payload: TermsPayload) -> dict:
+    """只补检索词，不动场景和文本。
+
+    为什么要单独一个接口：「按句拆分」是本地零成本路径，拆出来的场景没有
+    检索词；重新跑一次 AI 拆场景会把用户手改过的文本覆盖掉。这个接口只回
+    一组词，前端按顺序贴到空位上。
+    """
+    import asyncio
+
+    texts = [strip_known_tags(str(text)).strip()[:500] for text in payload.texts]
+    if not any(texts):
+        raise HTTPException(status_code=400, detail="没有可用的旁白")
+
+    if not llm.configured():
+        raise HTTPException(status_code=503, detail="未配置文本模型，无法生成检索词")
+
+    try:
+        raw = await asyncio.to_thread(
+            llm.chat,
+            [
+                {"role": "system", "content": "只输出 JSON，不要解释。"},
+                {
+                    "role": "user",
+                    "content": _TERMS_PROMPT + json.dumps(texts, ensure_ascii=False),
+                },
+            ],
+            None,
+            max_tokens=min(config.LLM_MAX_TOKENS, 2000),
+            temperature=0.2,
+        )
+        return {"terms": _parse_terms(raw, len(texts))}
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except Exception as exc:  # noqa: BLE001 - a bad completion is a retryable user error
+        redact.log_only("video", exc)
+        raise HTTPException(status_code=502, detail="模型输出无法解析，请重试") from exc
 
 
 @router.post("")

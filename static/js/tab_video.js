@@ -238,6 +238,49 @@ function splitBySentence() {
   el('video-split-status').dataset.state = 'connected';
 }
 
+/**
+ * Fill the search terms of scenes that have none.
+ *
+ * 按句拆分 is local and free, so it leaves terms empty on purpose. Re-running
+ * the AI split would overwrite text the user edited; this only asks for terms
+ * and matches them back by position.
+ */
+async function fillMissingTerms() {
+  const targets = scenes.filter((scene) => scene.text.trim() && !scene.searchTerms.length);
+  const status = el('video-split-status');
+  if (!targets.length) {
+    status.textContent = '所有场景都有检索词了';
+    status.dataset.state = 'connected';
+    return;
+  }
+  const button = el('video-fill-terms');
+  button.disabled = true;
+  status.textContent = `生成 ${targets.length} 场检索词…`;
+  status.dataset.state = 'connecting';
+  try {
+    const payload = await api('/api/video/terms', {
+      method: 'POST',
+      body: JSON.stringify({ texts: targets.map((scene) => scene.text) }),
+    });
+    targets.forEach((scene, index) => {
+      scene.searchTerms = (payload.terms?.[index] || []).slice(0, 4);
+    });
+    renderScenes();
+    saveDraft();
+    const filled = targets.filter((scene) => scene.searchTerms.length).length;
+    status.textContent =
+      filled === targets.length
+        ? `已补 ${filled} 场`
+        : `补了 ${filled} / ${targets.length} 场，剩下的手动填一下`;
+    status.dataset.state = filled === targets.length ? 'connected' : 'connecting';
+  } catch (error) {
+    status.textContent = error.message;
+    status.dataset.state = 'error';
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // ---- options --------------------------------------------------------------
 
 function voiceName(voice) {
@@ -583,6 +626,7 @@ export function init() {
 
   el('video-split-ai').addEventListener('click', splitWithAI);
   el('video-split-local').addEventListener('click', splitBySentence);
+  el('video-fill-terms').addEventListener('click', fillMissingTerms);
   el('video-create').addEventListener('click', createVideo);
   el('video-script').addEventListener('input', saveDraft);
   for (const id of [

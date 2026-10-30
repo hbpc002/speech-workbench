@@ -216,3 +216,62 @@ def test_file_404_when_not_ready(client, no_auth, monkeypatch):
         video.requests, "get", lambda *a, **k: FakeResponse(404, {"error": "not ready"})
     )
     assert client.get("/api/video/vid-9/file").status_code == 404
+
+
+# ---- /api/video/terms -------------------------------------------------------
+
+
+def test_terms_returns_one_group_per_text(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(
+        llm,
+        "chat",
+        lambda *a, **k: '[["coffee pouring", "ceramic cup"], ["forest sunlight"]]',
+    )
+    response = client.post("/api/video/terms", json={"texts": ["咖啡", "森林"]})
+    assert response.status_code == 200
+    assert response.json()["terms"] == [
+        ["coffee pouring", "ceramic cup"],
+        ["forest sunlight"],
+    ]
+
+
+def test_terms_pads_short_model_output(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: '[["ocean"]]')
+    payload = client.post("/api/video/terms", json={"texts": ["海", "山"]}).json()
+    # Missing groups become empty lists instead of shifting the mapping.
+    assert payload["terms"] == [["ocean"], []]
+
+
+def test_terms_accepts_a_flat_string(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: '["coffee"]')
+    payload = client.post("/api/video/terms", json={"texts": ["咖啡"]}).json()
+    assert payload["terms"] == [["coffee"]]
+
+
+def test_terms_requires_a_model(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: False)
+    response = client.post("/api/video/terms", json={"texts": ["咖啡"]})
+    assert response.status_code == 503
+
+
+def test_terms_bad_output_is_a_retryable_error(client, no_auth, monkeypatch):
+    monkeypatch.setattr(llm, "configured", lambda: True)
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: "好的，以下是检索词：")
+    response = client.post("/api/video/terms", json={"texts": ["咖啡"]})
+    assert response.status_code == 502
+
+
+def test_terms_keeps_tags_out_of_the_prompt(client, no_auth, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(llm, "configured", lambda: True)
+
+    def fake_chat(messages, model, **kwargs):
+        seen["prompt"] = messages[-1]["content"]
+        return '[["coffee"]]'
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    client.post("/api/video/terms", json={"texts": ["[excited] 咖啡。"]})
+    assert "[excited]" not in seen["prompt"]

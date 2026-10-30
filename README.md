@@ -159,7 +159,9 @@ docker run -d --network host \
 | `PUBLIC_BASE_URL` | 部署后的公网地址，`local` 存储（Render/Docker/本地）下声音复刻必填 |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 读写 token。在 Vercel 上把 Blob store 通过 **Connect to Project** 连到项目后自动注入，无需手动添加 |
 | `DASHSCOPE_WORKSPACE_ID` | `sk-ws-` 开头的业务空间 Key **必填**，否则声音复刻整页不可用（公共端点返回 `ModelNotFound`）。形如 `llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查 |
-| `LLM_MODELS` / `LLM_MODEL` | AI 标注/写稿/拆场景的模型。百炼 Key 带模型白名单，不在名单里报 403 `AccessDenied` 而非 404；默认的两个是实测调得通的 |
+| `LLM_BASE_URL` | 文本模型端点，默认 `https://magpie.059618.xyz/v1`（magpie 网关） |
+| `LLM_API_KEY` | magpie 的 Key，和 `DASHSCOPE_API_KEY` 是两把；不填则 AI 标注/写稿/拆场景不可用 |
+| `LLM_MODELS` / `LLM_MODEL` | 模型 id，默认 `group/never-stuck`（「永不卡住」路由组）；换模型只改这里 |
 | `PEXELS_API_KEY` | 短视频素材。Pexels 免费 Key 就够用 |
 | `SVM_BASE_URL` | 渲染器地址，默认 `http://127.0.0.1:3125`；留空则短视频页签置灰 |
 | `VIDEO_ENABLED` / `VIDEO_TTS_BRIDGE` | 一体化镜像里默认开；纯 Python 部署置灰 |
