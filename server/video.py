@@ -17,7 +17,9 @@ B 方案里 short-video-maker（Node/Remotion）和这个 FastAPI 应用装在�
 """
 
 import json
+import os
 import re
+import time
 from typing import Iterable
 
 import requests
@@ -491,6 +493,14 @@ def create_video(payload: CreateVideoPayload) -> dict:
     video_id = data.get("videoId") or data.get("id")
     if not video_id:
         raise HTTPException(status_code=502, detail="渲染服务没有返回任务 id")
+    _write_meta(
+        str(video_id),
+        {
+            "title": _title_for(scenes),
+            "createdAt": int(time.time() * 1000),
+            "scenes": len(scenes),
+        },
+    )
     return {"videoId": video_id}
 
 
@@ -505,12 +515,15 @@ def list_videos() -> dict:
         videos = []
     return {
         "videos": [
-            {
-                "id": item.get("id"),
-                "status": item.get("status"),
-                "progress": item.get("progress"),
-                "url": f"/api/video/{item.get('id')}/file" if item.get("status") == "ready" else None,
-            }
+            _with_meta(
+                str(item.get("id")),
+                {
+                    "id": item.get("id"),
+                    "status": item.get("status"),
+                    "progress": item.get("progress"),
+                    "url": f"/api/video/{item.get('id')}/file" if item.get("status") == "ready" else None,
+                },
+            )
             for item in videos
             if isinstance(item, dict) and item.get("id")
         ]
@@ -526,12 +539,15 @@ def video_status(video_id: str) -> dict:
         _fail(response)
     payload = _json(response)
     status = payload.get("status") or "unknown"
-    return {
-        "id": video_id,
-        "status": status,
-        "progress": payload.get("progress"),
-        "url": f"/api/video/{video_id}/file" if status == "ready" else None,
-    }
+    return _with_meta(
+        video_id,
+        {
+            "id": video_id,
+            "status": status,
+            "progress": payload.get("progress"),
+            "url": f"/api/video/{video_id}/file" if status == "ready" else None,
+        },
+    )
 
 
 @router.delete("/{video_id}")
@@ -541,7 +557,68 @@ def delete_video(video_id: str) -> dict:
     response = _request("DELETE", f"/api/short-video/{video_id}")
     if not response.ok:
         _fail(response)
+    try:
+        os.unlink(_meta_path(video_id))
+    except OSError:
+        pass
     return {"ok": True}
+
+
+# ---- 记录元数据 --------------------------------------------------------------
+#
+# 渲染器的列表只有 id/status：成片目录里没有标题，队列里没有创建时间。工作台
+# 在创建时往成片目录写一个 {id}.json（标题 = 第一场旁白的前 28 字），列表时
+# 读回来；没有 json 的老片子用 mp4 的 mtime 兜底。
+
+
+def _meta_path(video_id: str) -> str:
+    return os.path.join(config.VIDEO_META_DIR, f"{video_id}.json")
+
+
+def _video_mtime(video_id: str) -> int | None:
+    try:
+        path = os.path.join(config.VIDEO_META_DIR, f"{video_id}.mp4")
+        return int(os.path.getmtime(path) * 1000)
+    except OSError:
+        return None
+
+
+def _write_meta(video_id: str, payload: dict) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
+        return
+    path = _meta_path(video_id)
+    try:
+        os.makedirs(config.VIDEO_META_DIR, exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as exc:
+        # 元数据只是展示用，写不进去不影响出片。
+        redact.log_only("video", exc)
+
+
+def _read_meta(video_id: str) -> dict:
+    try:
+        with open(_meta_path(video_id), encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _title_for(scenes: list[dict]) -> str:
+    text = next((str(scene.get("text") or "") for scene in scenes if scene.get("text")), "")
+    return text[:28] + ("…" if len(text) > 28 else "")
+
+
+def _with_meta(video_id: str, item: dict) -> dict:
+    meta = _read_meta(video_id)
+    return {
+        **item,
+        "title": meta.get("title") or "",
+        "createdAt": meta.get("createdAt") or _video_mtime(video_id),
+    }
 
 
 def _stream(source: Iterable[bytes]):

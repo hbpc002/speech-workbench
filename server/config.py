@@ -358,6 +358,8 @@ VIDEO_TTS_BRIDGE_PORT = _env_int("VIDEO_TTS_BRIDGE_PORT", default=8101)
 VIDEO_TIMEOUT_SECONDS = _env_float("VIDEO_TIMEOUT_SECONDS", default=30.0)
 # 现成音频由渲染器从容器内的回环地址取，不走公网。
 VIDEO_AUDIO_BASE_URL = _env("VIDEO_AUDIO_BASE_URL", default="http://127.0.0.1:3123").rstrip("/")
+# 成片目录。渲染器把 mp4 写这里；工作台在旁边写 {id}.json 记标题和时间。
+VIDEO_META_DIR = _env("VIDEO_META_DIR", default="/app/data/videos")
 VIDEO_AUDIO_MAX_BYTES = max(1_000_000, _env_int("VIDEO_AUDIO_MAX_BYTES", default=50 * 1024 * 1024))
 VIDEO_FILE_TIMEOUT_SECONDS = _env_float("VIDEO_FILE_TIMEOUT_SECONDS", default=120.0)
 VIDEO_DEFAULT_VOICE = _env("VIDEO_DEFAULT_VOICE", default=TTS_VOICE)

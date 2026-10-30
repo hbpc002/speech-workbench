@@ -31,6 +31,11 @@ class FakeResponse:
         self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def temp_meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VIDEO_META_DIR", str(tmp_path / "videos"))
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
@@ -117,6 +122,8 @@ def test_status_maps_url_when_ready(client, no_auth, monkeypatch):
         "id": "abc123",
         "status": "ready",
         "progress": None,
+        "title": "",
+        "createdAt": None,
         "url": "/api/video/abc123/file",
     }
 
@@ -395,3 +402,54 @@ def test_create_accepts_long_model_voice_pairs(client, no_auth, renderer):
     )
     assert response.status_code == 200
     assert renderer[-1][2]["json"]["config"]["voice"] == voice
+
+
+# ---- 记录标题与时间 ---------------------------------------------------------
+
+
+def test_create_writes_title_and_time(client, no_auth, renderer, tmp_path):
+    import json
+    import time
+
+    client.post(
+        "/api/video",
+        json={
+            "scenes": [{"text": "今天聊露营装备。", "searchTerms": ["camping"]}],
+            "config": {},
+        },
+    )
+    meta = json.loads((tmp_path / "videos" / "vid-1.json").read_text(encoding="utf-8"))
+    assert meta["title"] == "今天聊露营装备。"
+    assert abs(meta["createdAt"] / 1000 - time.time()) < 10
+    assert meta["scenes"] == 1
+
+
+def test_list_includes_title_and_time(client, no_auth, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    (tmp_path / "videos").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "videos" / "vid-2.json").write_text(
+        json.dumps({"title": "海边的早晨", "createdAt": 1700000000000}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        video.requests,
+        "request",
+        lambda *a, **k: FakeResponse(200, {"videos": [{"id": "vid-2", "status": "ready"}]}),
+    )
+    payload = client.get("/api/video").json()
+    assert payload["videos"][0]["title"] == "海边的早晨"
+    assert payload["videos"][0]["createdAt"] == 1700000000000
+
+
+def test_delete_removes_meta(client, no_auth, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    (tmp_path / "videos").mkdir(parents=True, exist_ok=True)
+    meta = tmp_path / "videos" / "vid-3.json"
+    meta.write_text(json.dumps({"title": "x"}), encoding="utf-8")
+    monkeypatch.setattr(video.requests, "request", lambda *a, **k: FakeResponse(200, {"success": True}))
+    assert client.delete("/api/video/vid-3").status_code == 200
+    assert not meta.exists()

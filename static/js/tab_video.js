@@ -435,6 +435,19 @@ function stageLabel(progress) {
   return progress.percent == null ? label : `${label} ${progress.percent}%`;
 }
 
+/** "今天 14:32" / "10-29 14:32" / cross-year with the year. */
+function formatWhen(ms) {
+  if (!ms) return '';
+  const date = new Date(Number(ms));
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return `今天 ${hm}`;
+  const md = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
+  return date.getFullYear() === now.getFullYear() ? md : `${date.getFullYear()}-${md}`;
+}
+
 function historyCard(video) {
   const card = document.createElement('div');
   card.className = `hcard${video.status === 'processing' ? ' busy' : ''}`;
@@ -446,15 +459,17 @@ function historyCard(video) {
   meta.className = 'hmeta';
   const title = document.createElement('div');
   title.className = 'htitle';
-  title.textContent = `视频 …${shortId(video.id)}`;
+  const when = formatWhen(video.createdAt);
+  title.textContent = video.title || `视频 …${shortId(video.id)}`;
   const sub = document.createElement('div');
   sub.className = 'hsub';
-  sub.textContent =
+  const detail =
     video.status === 'ready'
       ? 'Pexels 素材 + 语音配音'
       : video.status === 'processing'
         ? stageLabel(video.progress)
         : '渲染失败';
+  sub.textContent = [when, `…${shortId(video.id)}`, detail].filter(Boolean).join(' · ');
   meta.append(title, sub);
 
   const badges = document.createElement('div');
@@ -615,7 +630,14 @@ async function mergeLocalJobs(serverVideos) {
   for (const entry of jobLog) {
     if (known.has(entry.id)) continue;
     if (entry.status === 'failed') {
-      extras.push({ id: entry.id, status: 'failed', progress: entry.progress || null, url: null });
+      extras.push({
+        id: entry.id,
+        status: 'failed',
+        progress: entry.progress || null,
+        url: null,
+        title: entry.title || '',
+        createdAt: entry.createdAt || entry.at,
+      });
       continue;
     }
     try {
@@ -628,12 +650,16 @@ async function mergeLocalJobs(serverVideos) {
         status: payload.status,
         progress: payload.progress || null,
         url: payload.url || null,
+        title: payload.title || entry.title || '',
+        createdAt: payload.createdAt || entry.at,
       });
       if (entry.status !== payload.status) {
         entry.status = payload.status;
         entry.progress = payload.progress || null;
         changed = true;
       }
+      if (payload.title) entry.title = payload.title;
+      if (payload.createdAt) entry.createdAt = payload.createdAt;
     } catch (_) {
       /* one missing status must not hide the rest of the history */
     }
@@ -652,7 +678,9 @@ async function refreshVideos() {
     const payload = await response.json();
     const serverVideos = [...(payload.videos || [])].reverse();
     const extras = await mergeLocalJobs(serverVideos);
-    lastVideos = [...extras, ...serverVideos];
+    lastVideos = [...extras, ...serverVideos].sort(
+      (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
+    );
     renderHistory(lastVideos);
     updateBadge(lastVideos);
     trackCurrent(lastVideos);
