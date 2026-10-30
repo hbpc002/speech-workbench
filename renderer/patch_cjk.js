@@ -98,12 +98,19 @@ function __captionsFromText(text, durationSeconds) {
   if (!chunks.length) return [];
   const totalMs = Math.max(300, Math.round(durationSeconds * 1000));
   const totalChars = chunks.reduce((n, c) => n + [...c].length, 0) || 1;
+  // 字幕整体提前 LEAD_MS 出现：TTS 的语速不是按字数均匀的，长句后半段
+  // 按比例算出来的时间往往比实际发音晚一点。把每个边界往前挪，最后一条
+  // 仍然撑到音频结束；第一条从 0 开始，不会被挪成负数。
+  const lead = Math.max(0, Number(process.env.CAPTION_LEAD_MS || 200));
   let at = 0;
-  return chunks.map((chunk) => {
+  return chunks.map((chunk, index) => {
     const span = Math.round(([...chunk].length / totalChars) * totalMs);
-    const caption = { text: chunk, startMs: at, endMs: Math.min(totalMs, at + span) };
+    const start = Math.max(0, at - lead);
+    const end = index === chunks.length - 1
+      ? totalMs
+      : Math.max(start + 80, Math.min(totalMs, at + span - lead));
     at += span;
-    return caption;
+    return { text: chunk, startMs: start, endMs: end };
   });
 }
 `;

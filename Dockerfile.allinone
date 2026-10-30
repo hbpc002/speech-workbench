@@ -61,7 +61,11 @@ RUN chmod +x /usr/local/bin/workbench-entrypoint
 
 ENV VIDEO_ENABLED=1 \
     VIDEO_TTS_BRIDGE=1 \
+    # 渲染器只用 1 个线程时，10 秒片子就要 58 秒；4 核机器上给 4 路约 31 秒。
+    # 队列仍然是串行的（processQueue 不看这个值），只影响 Remotion 的渲染线程。
+    CONCURRENCY=4 \
     VIDEO_AUDIO_BASE_URL=http://127.0.0.1:3123 \
+    CAPTION_LEAD_MS=200 \
     PEOPLE_FILTER_ENABLED=1 \
     PEOPLE_MODEL_PATH=/opt/models/yolov8n.onnx \
     SVM_BASE_URL=http://127.0.0.1:3125 \
