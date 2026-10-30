@@ -59,10 +59,10 @@ RUN cd /app \
 COPY renderer/entrypoint.sh /usr/local/bin/workbench-entrypoint
 RUN chmod +x /usr/local/bin/workbench-entrypoint
 
+# 渲染器只用 1 个线程时，10 秒片子就要 58 秒；4 核机器上给 4 路约 31 秒。
+# 队列仍然是串行的（processQueue 不看这个值），只影响 Remotion 的渲染线程。
 ENV VIDEO_ENABLED=1 \
     VIDEO_TTS_BRIDGE=1 \
-    # 渲染器只用 1 个线程时，10 秒片子就要 58 秒；4 核机器上给 4 路约 31 秒。
-    # 队列仍然是串行的（processQueue 不看这个值），只影响 Remotion 的渲染线程。
     CONCURRENCY=4 \
     VIDEO_AUDIO_BASE_URL=http://127.0.0.1:3123 \
     CAPTION_LEAD_MS=200 \
