@@ -124,6 +124,7 @@ def test_status_maps_url_when_ready(client, no_auth, monkeypatch):
         "progress": None,
         "title": "",
         "createdAt": None,
+        "tookMs": None,
         "url": "/api/video/abc123/file",
     }
 

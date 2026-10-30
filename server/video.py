@@ -614,10 +614,16 @@ def _title_for(scenes: list[dict]) -> str:
 
 def _with_meta(video_id: str, item: dict) -> dict:
     meta = _read_meta(video_id)
+    mtime = _video_mtime(video_id)
+    created = meta.get("createdAt") or mtime
+    # 耗时只在「有提交时间 + 文件已落盘」时才算得出来；老片子没有 meta，
+    # createdAt 只能用 mtime 兜底，那种情况下不假装知道耗时。
+    took = (mtime - created) if (mtime is not None and meta.get("createdAt")) else None
     return {
         **item,
         "title": meta.get("title") or "",
-        "createdAt": meta.get("createdAt") or _video_mtime(video_id),
+        "createdAt": created,
+        "tookMs": took,
     }
 
 

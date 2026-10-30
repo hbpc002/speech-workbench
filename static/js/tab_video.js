@@ -58,6 +58,7 @@ let lastVideos = [];
  * them). Newest first, capped. */
 let jobLog = [];
 let currentVideoId = null;
+let currentStartedAt = null;
 let draftTimer = null;
 /**
  * Whether the option selects exist yet.
@@ -435,6 +436,14 @@ function stageLabel(progress) {
   return progress.percent == null ? label : `${label} ${progress.percent}%`;
 }
 
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round(Number(ms) / 1000));
+  if (total < 60) return `${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes} 分 ${String(seconds).padStart(2, '0')} 秒`;
+}
+
 /** "今天 14:32" / "10-29 14:32" / cross-year with the year. */
 function formatWhen(ms) {
   if (!ms) return '';
@@ -469,7 +478,13 @@ function historyCard(video) {
       : video.status === 'processing'
         ? stageLabel(video.progress)
         : '渲染失败';
-  sub.textContent = [when, `…${shortId(video.id)}`, detail].filter(Boolean).join(' · ');
+  const elapsed =
+    video.status === 'processing' && video.createdAt ? Date.now() - video.createdAt : null;
+  const took = video.tookMs != null ? `用时 ${formatDuration(video.tookMs)}` : '';
+  const ticking = elapsed != null ? `已 ${formatDuration(elapsed)}` : '';
+  sub.textContent = [when, ticking || took, `…${shortId(video.id)}`, detail]
+    .filter(Boolean)
+    .join(' · ');
   meta.append(title, sub);
 
   const badges = document.createElement('div');
@@ -575,6 +590,7 @@ function trackCurrent(videos) {
   if (!video) return;
   if (video.status === 'ready') {
     currentVideoId = null;
+    currentStartedAt = null;
     markJob(video.id, 'ready', video.progress);
     el('video-progress').hidden = true;
     el('video-progress').classList.remove('running');
@@ -584,13 +600,18 @@ function trackCurrent(videos) {
   }
   if (video.status === 'failed' || video.status === 'error') {
     currentVideoId = null;
+    currentStartedAt = null;
     markJob(video.id, 'failed', video.progress);
     fail('渲染失败，详情见渲染服务日志');
     return;
   }
-  setStatus(`渲染中 · ${stageLabel(video.progress)}`, 'connecting');
+  const started = video.createdAt || currentStartedAt;
+  const elapsed = started ? Date.now() - started : null;
+  const suffix = elapsed != null ? ` · 已 ${formatDuration(elapsed)}` : '';
+  setStatus(`渲染中 · ${stageLabel(video.progress)}${suffix}`, 'connecting');
   updateProgressBar(video.progress);
-  el('video-progress-text').textContent = `${stageLabel(video.progress)} · 可以离开这个页签，任务在后台继续`;
+  el('video-progress-text').textContent =
+    `${stageLabel(video.progress)}${suffix} · 可以离开这个页签，任务在后台继续`;
 }
 
 function readJobLog() {
@@ -747,6 +768,7 @@ async function createVideo() {
       }),
     });
     currentVideoId = payload.videoId;
+    currentStartedAt = Date.now();
     rememberJob(payload.videoId);
     // Deliberately re-enabled: the renderer has its own queue, and the user
     // asked to keep working while it renders.
