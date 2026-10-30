@@ -41,7 +41,7 @@
 - **复刻音色配音**：和语音合成页共用同一套 DashScope 音色，选哪个复刻音色就用哪个
 - **画面**：Pexels 视频素材按检索词匹配，可选竖屏 9:16 / 横屏 16:9、字幕位置、背景音乐与音量
 - **无人物素材**：Pexels 没有「不要人物」筛选项，所以先按 URL 标题过滤，再用本地 YOLOv8n 检查预览帧；检出人就换下一条，检索词也会要求 AI 避开人物
-- **从语音记录直接开始**：语音合成 / 声音复刻的历史里点「生成视频」，会把这条记录的稿子和音色带到短视频页签并自动拆场景
+- **从语音记录直接开始**：语音合成 / 声音复刻的历史里点「生成视频」，会把这条记录**已经合成好的音频**带到短视频页签，不会再合成第二遍；字幕直接取口播稿（去掉情感标签），不用 Whisper 重识别
 - **服务端渲染**：Remotion 在容器里渲染，不再占用浏览器；一条 15 秒成片约 1–3 分钟
 - **记录**：播放 / 下载 / 删除，和渲染队列同一份数据
 
@@ -161,7 +161,7 @@ docker run -d --network host \
 | `DASHSCOPE_WORKSPACE_ID` | `sk-ws-` 开头的业务空间 Key **必填**，否则声音复刻整页不可用（公共端点返回 `ModelNotFound`）。形如 `llm-xxxxxxxx`，百炼控制台「业务空间 → 业务空间详情」查 |
 | `LLM_BASE_URL` | 文本模型端点，默认 `https://magpie.059618.xyz/v1`（magpie 网关） |
 | `LLM_API_KEY` | magpie 的 Key，和 `DASHSCOPE_API_KEY` 是两把；不填则 AI 标注/写稿/拆场景不可用 |
-| `LLM_MODELS` / `LLM_MODEL` | 模型 id，默认 `group/never-stuck`（「永不卡住」路由组）；换模型只改这里 |
+| `LLM_MODELS` / `LLM_MODEL` | 模型 id，默认 `groq/openai/gpt-oss-120b`（Groq GPT-OSS-120B，经 magpie 转发）；备选 `groq/qwen/qwen3.8-27b`、`auto/qwen3.8-27b`、`group/never-stuck` |
 | `PEXELS_API_KEY` | 短视频素材。Pexels 免费 Key 就够用 |
 | `SVM_BASE_URL` | 渲染器地址，默认 `http://127.0.0.1:3125`；留空则短视频页签置灰 |
 | `VIDEO_ENABLED` / `VIDEO_TTS_BRIDGE` | 一体化镜像里默认开；纯 Python 部署置灰 |

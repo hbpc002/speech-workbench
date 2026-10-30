@@ -17,7 +17,7 @@ import { el, state } from '/static/js/app.js';
 import { api } from '/static/js/http.js';
 import { error as logError } from '/static/js/debug_log.js';
 import { fillSelect } from '/static/js/tag_dialog.js';
-import { MAX_SCENES, splitLocal, termsToText, textToTerms } from '/static/js/video_split.js';
+import { MAX_SCENES, pcmToWavBlob, splitLocal, termsToText, textToTerms } from '/static/js/video_split.js';
 import { SHORT_VIDEO_EVENT } from '/static/js/short_video_request.js';
 
 const DRAFT_KEY = 'video.draft';
@@ -124,9 +124,18 @@ function readDraft() {
 
 // ---- scenes ---------------------------------------------------------------
 
+function updateSceneNote() {
+  const note = el('video-scene-note');
+  if (!note) return;
+  note.textContent = scenes.some((scene) => scene.audioToken)
+    ? '本组场景使用语音记录里的现成音频，不会再合成；字幕直接取口播稿（去掉情感标签）。'
+    : '每场一段旁白；检索词用英文（Pexels 按它找画面），2–3 个最稳。素材会自动过滤掉有人物出镜的镜头。';
+}
+
 function renderScenes() {
   const box = el('video-scenes');
   box.innerHTML = '';
+  updateSceneNote();
   if (!scenes.length) {
     const empty = document.createElement('p');
     empty.className = 'muted small';
@@ -145,6 +154,12 @@ function renderScenes() {
     const no = document.createElement('span');
     no.className = 'vscene-no';
     no.textContent = String(index + 1);
+    if (scene.audioToken) {
+      const badge = document.createElement('span');
+      badge.className = 'hbadge ok';
+      badge.textContent = '记录音频';
+      head.appendChild(badge);
+    }
     const remove = actionButton('删除', {
       className: 'ghost danger',
       create: document.createElement.bind(document),
@@ -186,6 +201,9 @@ function applyScenes(list) {
     .map((item) => ({
       text: String(item.text || '').trim(),
       searchTerms: (item.searchTerms || []).map((term) => String(term).trim()).filter(Boolean),
+      // A pre-rendered audio token survives re-renders and reloads; the
+      // renderer will reuse that WAV instead of synthesising again.
+      audioToken: String(item.audioToken || ''),
     }))
     .filter((item) => item.text)
     .slice(0, MAX_SCENES);
@@ -560,6 +578,7 @@ async function createVideo() {
         scenes: usable.map((scene) => ({
           text: scene.text.trim(),
           searchTerms: scene.searchTerms,
+          audioToken: scene.audioToken || '',
         })),
         config: {
           voice: el('video-voice').value,
@@ -592,7 +611,14 @@ async function createVideo() {
  * and the bridge needs the model to know which endpoint a preset voice belongs
  * to. Without it every record would fall back to the default clone.
  */
-function applyPrefill() {
+async function uploadAudio(pcm, sampleRate) {
+  const blob = pcmToWavBlob([pcm], sampleRate);
+  const form = new FormData();
+  form.append('file', blob, 'scene.wav');
+  return api('/api/video/audio', { method: 'POST', body: form });
+}
+
+async function applyPrefill() {
   if (!pendingPrefill || !options?.enabled) return;
   const detail = pendingPrefill;
   pendingPrefill = null;
@@ -609,9 +635,38 @@ function applyPrefill() {
     }
     select.value = id;
   }
+  const status = el('video-split-status');
+  const usable = (detail.sentences || [])
+    .filter((sentence) => sentence.text && sentence.pcm && sentence.pcm.length)
+    .slice(0, MAX_SCENES);
+
+  if (usable.length && detail.sampleRate) {
+    status.textContent = `正在载入 ${usable.length} 段记录音频…`;
+    status.dataset.state = 'connecting';
+    try {
+      const uploaded = await Promise.all(
+        usable.map((sentence) => uploadAudio(sentence.pcm, detail.sampleRate))
+      );
+      scenes = usable.map((sentence, index) => ({
+        text: sentence.text,
+        searchTerms: [],
+        audioToken: uploaded[index].token,
+      }));
+      renderScenes();
+      saveDraft();
+      status.textContent = '已使用记录里的音频，正在补检索词…';
+      await fillMissingTerms();
+    } catch (error) {
+      status.textContent = `记录音频载入失败：${error.message}`;
+      status.dataset.state = 'error';
+    }
+    return;
+  }
+
+  // No samples in this record (never synthesised): fall back to the text path.
   saveDraft();
-  el('video-split-status').textContent = '来自语音记录，正在拆场景…';
-  el('video-split-status').dataset.state = 'connecting';
+  status.textContent = '来自语音记录，正在拆场景…';
+  status.dataset.state = 'connecting';
   splitWithAI();
 }
 

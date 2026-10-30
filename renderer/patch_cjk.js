@@ -16,7 +16,10 @@ const __origCreateCaption = Whisper.prototype.CreateCaption;
 const __isCJKText = (t) => /[\\u3400-\\u9fff]/.test(t);
 const __ms = (h, m, s, ms) => ((+h) * 3600 + (+m) * 60 + (+s)) * 1000 + (+ms);
 
-Whisper.prototype.CreateCaption = async function (audioPath) {
+Whisper.prototype.CreateCaption = async function (audioPath, text, durationSeconds) {
+  // 有现成文本就直接用它做字幕：不给 Whisper 再次识别（中文小模型经常
+  // 认成英文/乱码），也不用等转写。
+  if (text && durationSeconds > 0) return __captionsFromText(text, durationSeconds);
   const { execFileSync } = require("node:child_process");
   const path = require("node:path");
   const bin = path.join(this.config.whisperInstallPath, "main");
@@ -59,6 +62,50 @@ Whisper.prototype.CreateCaption = async function (audioPath) {
   }
   return captions;
 };
+
+// 文本字幕：去掉方括号标签，按标点切块（中文 8 字、西文 24 字符），按字数
+// 比例分配时长。
+const __captionClean = (text) =>
+  String(text || "").replace(/\\[[^\\[\\]\\n]{0,48}\\]/g, "").replace(/\\s+/g, " ").trim();
+
+function __captionChunks(text) {
+  const clean = __captionClean(text);
+  if (!clean) return [];
+  const pieces = clean.split(/(?<=[，。！？、：；,.!?;])/).map((x) => x.trim()).filter(Boolean);
+  const chunks = [];
+  for (const piece of pieces) {
+    if (/[\\u3400-\\u9fff]/.test(piece)) {
+      const chars = [...piece];
+      for (let i = 0; i < chars.length; i += 8) chunks.push(chars.slice(i, i + 8).join(""));
+    } else {
+      let line = "";
+      for (const word of piece.split(/\\s+/)) {
+        if (line && (line + " " + word).length > 24) {
+          chunks.push(line);
+          line = word;
+        } else {
+          line = line ? line + " " + word : word;
+        }
+      }
+      if (line) chunks.push(line);
+    }
+  }
+  return chunks.length ? chunks : [clean.slice(0, 24)];
+}
+
+function __captionsFromText(text, durationSeconds) {
+  const chunks = __captionChunks(text);
+  if (!chunks.length) return [];
+  const totalMs = Math.max(300, Math.round(durationSeconds * 1000));
+  const totalChars = chunks.reduce((n, c) => n + [...c].length, 0) || 1;
+  let at = 0;
+  return chunks.map((chunk) => {
+    const span = Math.round(([...chunk].length / totalChars) * totalMs);
+    const caption = { text: chunk, startMs: at, endMs: Math.min(totalMs, at + span) };
+    at += span;
+    return caption;
+  });
+}
 `;
 fs.writeFileSync(p, s);
 console.log("patched whisper plaintext mode");

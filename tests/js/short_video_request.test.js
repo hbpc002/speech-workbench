@@ -25,7 +25,29 @@ test('dispatching carries text, model and voice', () => {
     text: '你好',
     model: 'cosyvoice-v2',
     voice: 'longanhuan',
+    sentences: [],
+    sampleRate: 0,
   });
+});
+
+test('finished samples travel with the event', () => {
+  const events = [];
+  globalThis.window = { dispatchEvent: (event) => events.push(event) };
+  try {
+    requestShortVideo({
+      text: '你好',
+      sentences: [
+        { text: '你好，', pcm: new Int16Array([1, 2, 3]) },
+        { text: '世界。', pcm: null },
+      ],
+      sampleRate: 22050,
+    });
+  } finally {
+    delete globalThis.window;
+  }
+  assert.equal(events[0].detail.sampleRate, 22050);
+  assert.equal(events[0].detail.sentences.length, 1);
+  assert.equal(events[0].detail.sentences[0].text, '你好，');
 });
 
 test('blank text is refused before dispatching', () => {

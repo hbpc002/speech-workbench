@@ -24,9 +24,20 @@ Pexels 没有这个筛选项，过滤在 `server/people.py`（slug 黑名单 + Y
 一条候选都不剩时抛 `No videos found`，让上层换检索词；过滤服务不可达时退回
 本地 slug 黑名单，不让功能整体失败。jokerTerms 也顺带扩成自然/空镜类。
 
+## patch_audio.js
+
+两件事：
+
+1. `ShortCreator.js`：场景带 `audioUrl` 时直接下载这段 WAV 当配音，跳过
+   `kokoro.generate`。语音记录里已经合成好的音频因此不会被再合成一遍。
+2. 字幕调用改成 `CreateCaption(audioPath, scene.text, seconds)`，把口播稿
+   （服务端已去掉情感标签）交给 `patch_cjk.js` 的文本分支。
+
 ## patch_cjk.js
 
-`Whisper.js` 的中文字幕解析。`@remotion/install-whisper-cpp` 的默认解析会把一个
+`Whisper.js` 的中文字幕解析。现在优先走文本分支：有 `scene.text` 就直接切块
+（中文 8 字、西文 24 字符，按标点断句），按字数比例分配时长，完全不再跑
+Whisper；没有文本时才回落到纯文本转写。`@remotion/install-whisper-cpp` 的默认解析会把一个
 汉字的 UTF-8 字节切成两半，解出来是 `U+FFFD`（渲染成 `▣?`）。这个补丁让中文
 直接跑 `whisper-cli` 的纯文本输出，按 `[from --> to]` 时间戳重排字幕，并再按
 标点和 8 字上限切块。

@@ -351,7 +351,17 @@ function renderCard(record) {
       // The short-video tab takes over: it re-splits the script, picks
       // person-free Pexels clips and renders on the server. The browser-side
       // dialog is no longer the destination here.
-      onClick: () => requestShortVideo({ text: record.text, model: record.model, voice: record.voice }),
+      onClick: () => requestShortVideo({
+        text: record.text,
+        model: record.model,
+        voice: record.voice,
+        // Pass the finished PCM: the video tab reuses it instead of paying for
+        // a second synthesis.
+        sentences: record.sentences
+          .filter((sentence) => sentence.status === 'done' && sentence.pcm)
+          .map((sentence) => ({ text: sentence.text, pcm: sentence.pcm })),
+        sampleRate: SAMPLE_RATE,
+      }),
       // Nothing to put on the timeline without finished audio.
       disabled: done === 0 || isBusy,
     }),

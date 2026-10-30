@@ -275,3 +275,104 @@ def test_terms_keeps_tags_out_of_the_prompt(client, no_auth, monkeypatch):
     monkeypatch.setattr(llm, "chat", fake_chat)
     client.post("/api/video/terms", json={"texts": ["[excited] 咖啡。"]})
     assert "[excited]" not in seen["prompt"]
+
+
+# ---- 现成音频（语音记录里的 WAV） --------------------------------------------
+
+
+def make_wav(seconds=0.5, rate=16000):
+    import io
+    import wave
+
+    out = io.BytesIO()
+    with wave.open(out, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(b"\0" * int(seconds * rate) * 2)
+    return out.getvalue()
+
+
+@pytest.fixture
+def local_storage(monkeypatch):
+    import os
+
+    from server import storage
+
+    monkeypatch.setattr(config, "PUBLIC_BASE_URL", "http://app.test")
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "local")
+    written = []
+    yield written
+    for name in written:
+        try:
+            os.unlink(os.path.join(storage.MEDIA_DIR, name))
+        except OSError:
+            pass
+
+
+def test_upload_audio_returns_token_and_duration(client, no_auth, local_storage):
+    response = client.post(
+        "/api/video/audio",
+        files={"file": ("scene.wav", make_wav(0.5), "audio/wav")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["token"].endswith(".wav")
+    assert payload["duration"] == 0.5
+    local_storage.append(payload["token"])
+
+
+def test_upload_audio_rejects_non_wav(client, no_auth, local_storage):
+    response = client.post(
+        "/api/video/audio",
+        files={"file": ("scene.mp3", b"not a wav", "audio/mpeg")},
+    )
+    assert response.status_code == 400
+
+
+def test_create_with_audio_token_reuses_the_file(client, no_auth, renderer, local_storage):
+    token = client.post(
+        "/api/video/audio",
+        files={"file": ("scene.wav", make_wav(0.5), "audio/wav")},
+    ).json()["token"]
+    local_storage.append(token)
+
+    response = client.post(
+        "/api/video",
+        json={
+            "scenes": [{"text": "你好", "searchTerms": ["city"], "audioToken": token}],
+            "config": {},
+        },
+    )
+    assert response.status_code == 200
+
+    scene = renderer[-1][2]["json"]["scenes"][0]
+    assert scene["audioUrl"] == f"{config.VIDEO_AUDIO_BASE_URL}/media/{token}"
+    assert scene["audioDuration"] == 0.5
+
+
+def test_create_with_expired_audio_token_is_a_readable_error(client, no_auth, renderer):
+    response = client.post(
+        "/api/video",
+        json={
+            "scenes": [
+                {"text": "你好", "searchTerms": ["city"], "audioToken": "a" * 32 + ".wav"}
+            ],
+            "config": {},
+        },
+    )
+    assert response.status_code == 400
+    assert "过期" in response.json()["detail"]
+    assert renderer == []
+
+
+def test_create_rejects_bad_audio_token(client, no_auth, renderer):
+    response = client.post(
+        "/api/video",
+        json={
+            "scenes": [{"text": "你好", "searchTerms": ["city"], "audioToken": "../etc/passwd"}],
+            "config": {},
+        },
+    )
+    assert response.status_code == 400
+    assert renderer == []

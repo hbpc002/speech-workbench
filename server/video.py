@@ -21,11 +21,11 @@ import re
 from typing import Iterable
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import api_voices, config, llm, redact, voices
+from . import api_voices, config, llm, redact, storage, voices
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
@@ -52,6 +52,9 @@ _FENCE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*\n?|\n?\s*```\s*$")
 class ScenePayload(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     searchTerms: list[str] = Field(default_factory=list, max_length=_MAX_SEARCH_TERMS)
+    # 来自语音记录时，这段旁白已经有合成好的 WAV；token 是 `/api/video/audio`
+    # 返回的媒体文件名。为空才走渲染器的 TTS。
+    audioToken: str = Field(default="", max_length=80)
 
 
 class RenderPayload(BaseModel):
@@ -365,6 +368,35 @@ async def split_scenes(payload: ScenesPayload) -> dict:
         }
 
 
+@router.post("/audio")
+async def upload_audio(file: UploadFile = File(...)) -> dict:
+    """收下浏览器里已经合成好的 WAV，给渲染器一个可下载的地址。
+
+    为什么走服务端而不是浏览器直传：渲染器在容器里，浏览器拿不到它的地址；
+    而且媒体地址必须能被同容器的 node 用回环访问。文件名是 uuid4，和声音复刻
+    的临时样本同一套存储（`/media/{name}` 无鉴权，uuid 不可猜）。
+    """
+    if storage.backend() != "local":
+        raise HTTPException(
+            status_code=503,
+            detail="现成音频只支持本地存储后端（一体化镜像）",
+        )
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="音频为空")
+    if len(payload) > config.VIDEO_AUDIO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="音频太大")
+    info = api_voices._wav_info(payload)
+    if info is None or info[4] <= 0:
+        raise HTTPException(status_code=400, detail="不是有效的 PCM WAV")
+    try:
+        url = await storage.put(payload, ".wav")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=redact.scrub(exc)) from exc
+    name = url.rsplit("/", 1)[-1]
+    return {"token": name, "duration": round(info[4], 3)}
+
+
 @router.post("/terms")
 async def suggest_terms(payload: TermsPayload) -> dict:
     """只补检索词，不动场景和文本。
@@ -420,14 +452,25 @@ def create_video(payload: CreateVideoPayload) -> dict:
         text = strip_known_tags(scene.text).strip()
         if not text:
             raise HTTPException(status_code=400, detail="每一场都需要文本")
-        scenes.append(
-            {
-                "text": text,
-                "searchTerms": [term.strip()[:60] for term in scene.searchTerms if term.strip()][
-                    :_MAX_SEARCH_TERMS
-                ],
-            }
-        )
+        item = {
+            "text": text,
+            "searchTerms": [term.strip()[:60] for term in scene.searchTerms if term.strip()][
+                :_MAX_SEARCH_TERMS
+            ],
+        }
+        if scene.audioToken:
+            if not re.fullmatch(r"[a-f0-9]{32}\.wav", scene.audioToken):
+                raise HTTPException(status_code=400, detail="音频 token 不合法")
+            stored = storage.read_local(scene.audioToken)
+            info = api_voices._wav_info(stored) if stored else None
+            if info is None or info[4] <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="这段音频已过期，请从语音记录重新点「生成视频」",
+                )
+            item["audioUrl"] = f"{config.VIDEO_AUDIO_BASE_URL}/media/{scene.audioToken}"
+            item["audioDuration"] = round(info[4], 3)
+        scenes.append(item)
 
     body = {
         "scenes": scenes,

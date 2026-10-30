@@ -14,10 +14,24 @@ export const SHORT_VIDEO_EVENT = 'short-video:prefill';
  * trip: the renderer re-synthesises the text, and without the model the bridge
  * cannot tell `longanhuan@cosyvoice-v2` from `longanhuan@cosyvoice-v3-flash`.
  */
-export function requestShortVideo({ text, model, voice } = {}) {
+export function requestShortVideo({ text, model, voice, sentences, sampleRate } = {}) {
   const body = String(text || '').trim();
   if (!body) return false;
-  const detail = { text: body, model: String(model || ''), voice: String(voice || '') };
+  // Only finished sentences with samples are useful; a record that was never
+  // synthesised falls back to the text path in the video tab.
+  const audio = (Array.isArray(sentences) ? sentences : [])
+    .map((sentence) => ({
+      text: String(sentence?.text || ''),
+      pcm: sentence?.pcm || null,
+    }))
+    .filter((sentence) => sentence.text && sentence.pcm && sentence.pcm.length);
+  const detail = {
+    text: body,
+    model: String(model || ''),
+    voice: String(voice || ''),
+    sentences: audio,
+    sampleRate: Number(sampleRate) || 0,
+  };
   window.dispatchEvent(new CustomEvent(SHORT_VIDEO_EVENT, { detail }));
   return true;
 }

@@ -214,7 +214,15 @@ LLM_API_KEY = _env("LLM_API_KEY", default="")
 # magpie 的 `group/never-stuck` 是一个路由组：网关会在多个上游之间挑一个能用的
 # 模型。id 必须原样发，不能改写成具体模型名，否则等于绕过网关的容错。
 LLM_MODELS = _parse_models(
-    _env("LLM_MODELS", default="group/never-stuck:永不卡住")
+    _env(
+        "LLM_MODELS",
+        default=(
+            "groq/openai/gpt-oss-120b:GPT-OSS-120B（Groq）,"
+            "groq/qwen/qwen3.8-27b:Qwen3.8-27B（Groq）,"
+            "auto/qwen3.8-27b:Qwen3.8-27B（自动）,"
+            "group/never-stuck:永不卡住"
+        ),
+    )
 )
 LLM_MODEL = _env("LLM_MODEL", default=LLM_MODELS[0]["id"] if LLM_MODELS else "")
 
@@ -348,6 +356,9 @@ VIDEO_RENDERER_PORT = _env_int("VIDEO_RENDERER_PORT", default=3125)
 VIDEO_TTS_BRIDGE = _env_bool("VIDEO_TTS_BRIDGE", default=bool(SVM_BASE_URL))
 VIDEO_TTS_BRIDGE_PORT = _env_int("VIDEO_TTS_BRIDGE_PORT", default=8101)
 VIDEO_TIMEOUT_SECONDS = _env_float("VIDEO_TIMEOUT_SECONDS", default=30.0)
+# 现成音频由渲染器从容器内的回环地址取，不走公网。
+VIDEO_AUDIO_BASE_URL = _env("VIDEO_AUDIO_BASE_URL", default="http://127.0.0.1:3123").rstrip("/")
+VIDEO_AUDIO_MAX_BYTES = max(1_000_000, _env_int("VIDEO_AUDIO_MAX_BYTES", default=50 * 1024 * 1024))
 VIDEO_FILE_TIMEOUT_SECONDS = _env_float("VIDEO_FILE_TIMEOUT_SECONDS", default=120.0)
 VIDEO_DEFAULT_VOICE = _env("VIDEO_DEFAULT_VOICE", default=TTS_VOICE)
 VIDEO_MAX_SCENES = max(1, _env_int("VIDEO_MAX_SCENES", default=20))

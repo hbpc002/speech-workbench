@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { splitLocal, textToTerms } from '../../static/js/video_split.js';
+import { pcmToWavBlob, splitLocal, textToTerms } from '../../static/js/video_split.js';
 
 test('splits on Chinese sentence punctuation', () => {
   assert.deepEqual(splitLocal('第一句。第二句！第三句？'), ['第一句。第二句！第三句？']);
@@ -46,4 +46,19 @@ test('parses search terms with Chinese and English punctuation', () => {
 
 test('caps search terms at four', () => {
   assert.equal(textToTerms('a,b,c,d,e').length, 4);
+});
+
+test('pcmToWavBlob writes a 44-byte header and PCM payload', async () => {
+  const blob = pcmToWavBlob([new Int16Array([1, -2, 3])], 16000);
+  assert.equal(blob.type, 'audio/wav');
+  assert.equal(blob.size, 44 + 6);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const text = (start, end) => String.fromCharCode(...bytes.slice(start, end));
+  assert.equal(text(0, 4), 'RIFF');
+  assert.equal(text(8, 12), 'WAVE');
+  const view = new DataView(bytes.buffer);
+  assert.equal(view.getUint32(24, true), 16000);
+  assert.equal(view.getUint32(40, true), 6);
+  assert.equal(view.getInt16(44, true), 1);
+  assert.equal(view.getInt16(46, true), -2);
 });

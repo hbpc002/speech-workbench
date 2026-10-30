@@ -1375,6 +1375,9 @@ function renderHistory() {
           text: record.text,
           model: record.model,
           voice: record.voice,
+          // The clone preview is one clip; the video tab reuses it as-is.
+          sentences: previewSentences(record).filter((sentence) => sentence.pcm && sentence.pcm.length),
+          sampleRate: state.config.tts_sample_rate,
         }),
         disabled: !record.chunks.length || busy,
       }),
