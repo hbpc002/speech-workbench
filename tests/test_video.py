@@ -116,6 +116,7 @@ def test_status_maps_url_when_ready(client, no_auth, monkeypatch):
     assert response.json() == {
         "id": "abc123",
         "status": "ready",
+        "progress": None,
         "url": "/api/video/abc123/file",
     }
 

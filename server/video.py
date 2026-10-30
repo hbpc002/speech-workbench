@@ -508,6 +508,7 @@ def list_videos() -> dict:
             {
                 "id": item.get("id"),
                 "status": item.get("status"),
+                "progress": item.get("progress"),
                 "url": f"/api/video/{item.get('id')}/file" if item.get("status") == "ready" else None,
             }
             for item in videos
@@ -523,10 +524,12 @@ def video_status(video_id: str) -> dict:
     response = _request("GET", f"/api/short-video/{video_id}/status")
     if not response.ok:
         _fail(response)
-    status = _json(response).get("status") or "unknown"
+    payload = _json(response)
+    status = payload.get("status") or "unknown"
     return {
         "id": video_id,
         "status": status,
+        "progress": payload.get("progress"),
         "url": f"/api/video/{video_id}/file" if status == "ready" else None,
     }
 

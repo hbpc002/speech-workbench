@@ -21,8 +21,7 @@ import { MAX_SCENES, pcmToWavBlob, splitLocal, termsToText, textToTerms } from '
 import { SHORT_VIDEO_EVENT } from '/static/js/short_video_request.js';
 
 const DRAFT_KEY = 'video.draft';
-const POLL_MS = 3000;
-const POLL_LIMIT_MS = 15 * 60 * 1000;
+const JOB_LOG_KEY = 'video.jobs';
 
 const MUSIC_LABELS = {
   sad: '伤感',
@@ -52,7 +51,12 @@ const PADDING_CHOICES = [
 /** `{ text, searchTerms }[]`, the same shape the API takes. */
 let scenes = [];
 let options = null;
-let polling = null;
+let pollTimer = null;
+let lastVideos = [];
+/** Jobs submitted from this browser, including ones that failed (the renderer
+ * forgets failures: no file, no queue entry, so the server list cannot show
+ * them). Newest first, capped. */
+let jobLog = [];
 let currentVideoId = null;
 let draftTimer = null;
 /**
@@ -380,8 +384,8 @@ function shortId(id) {
 }
 
 function statusBadge(status) {
-  const labels = { ready: '完成', processing: '渲染中', error: '失败' };
-  const kinds = { ready: 'ok', processing: 'warn', error: 'err' };
+  const labels = { ready: '完成', processing: '渲染中', failed: '失败', error: '失败' };
+  const kinds = { ready: 'ok', processing: 'warn', failed: 'err', error: 'err' };
   const badge = document.createElement('span');
   badge.className = `hbadge ${kinds[status] || ''}`;
   badge.textContent = labels[status] || status || '未知';
@@ -403,7 +407,9 @@ async function deleteVideo(id) {
   if (!confirm('删除这条视频？')) return;
   try {
     await api(`/api/video/${id}`, { method: 'DELETE' });
-    await loadHistory();
+    jobLog = jobLog.filter((entry) => entry.id !== id);
+    saveJobLog();
+    await refreshVideos();
     if (currentVideoId === id) {
       el('video-player').hidden = true;
       el('video-download').hidden = true;
@@ -414,9 +420,24 @@ async function deleteVideo(id) {
   }
 }
 
+const STAGES = {
+  queue: '排队',
+  audio: '准备配音',
+  search: '找素材',
+  download: '下载素材',
+  render: '渲染画面',
+  done: '完成',
+};
+
+function stageLabel(progress) {
+  if (!progress) return '渲染中';
+  const label = STAGES[progress.stage] || '渲染中';
+  return progress.percent == null ? label : `${label} ${progress.percent}%`;
+}
+
 function historyCard(video) {
   const card = document.createElement('div');
-  card.className = 'hcard';
+  card.className = `hcard${video.status === 'processing' ? ' busy' : ''}`;
 
   const head = document.createElement('div');
   head.className = 'hhead';
@@ -428,7 +449,12 @@ function historyCard(video) {
   title.textContent = `视频 …${shortId(video.id)}`;
   const sub = document.createElement('div');
   sub.className = 'hsub';
-  sub.textContent = video.status === 'ready' ? 'Pexels 素材 + 语音配音' : '渲染中，通常 1–3 分钟';
+  sub.textContent =
+    video.status === 'ready'
+      ? 'Pexels 素材 + 语音配音'
+      : video.status === 'processing'
+        ? stageLabel(video.progress)
+        : '渲染失败';
   meta.append(title, sub);
 
   const badges = document.createElement('div');
@@ -455,100 +481,202 @@ function historyCard(video) {
       })
     );
   }
-  actions.append(
-    actionButton('删除', {
-      className: 'ghost danger',
-      create: document.createElement.bind(document),
-      onClick: () => deleteVideo(video.id),
-    })
-  );
+  if (video.status !== 'processing') {
+    actions.append(
+      actionButton('删除', {
+        className: 'ghost danger',
+        create: document.createElement.bind(document),
+        onClick: () => deleteVideo(video.id),
+      })
+    );
+  }
 
   head.append(meta, badges, actions);
   card.appendChild(head);
+
+  if (video.status === 'processing') {
+    const body = document.createElement('div');
+    body.className = 'hbody';
+    const bar = document.createElement('div');
+    bar.className = 'hprogress';
+    const fill = document.createElement('span');
+    // No percentage yet (queueing / old jobs): leave it at 0 rather than
+    // pretending; the stage label still says what is happening.
+    fill.style.width = `${video.progress?.percent ?? 0}%`;
+    bar.appendChild(fill);
+    body.appendChild(bar);
+    card.appendChild(body);
+  }
   return card;
 }
 
-async function loadHistory() {
+function renderHistory(videos) {
   const box = el('video-history');
-  if (!options?.enabled) {
-    box.innerHTML = '';
+  box.innerHTML = '';
+  if (!videos.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted small';
+    empty.textContent = '还没有生成过视频。';
+    box.appendChild(empty);
     return;
   }
-  try {
-    const payload = await api('/api/video');
-    const videos = [...(payload.videos || [])].reverse();
-    box.innerHTML = '';
-    if (!videos.length) {
-      const empty = document.createElement('p');
-      empty.className = 'muted small';
-      empty.textContent = '还没有生成过视频。';
-      box.appendChild(empty);
-      return;
-    }
-    for (const video of videos) box.appendChild(historyCard(video));
-  } catch (error) {
-    box.innerHTML = '';
-    const note = document.createElement('p');
-    note.className = 'muted small';
-    note.textContent = `视频记录加载失败：${error.message}`;
-    box.appendChild(note);
+  for (const video of videos) box.appendChild(historyCard(video));
+}
+
+/** Header badge: visible on every tab while a job is rendering. */
+function updateBadge(videos) {
+  const badge = el('render-badge');
+  if (!badge) return;
+  const processing = videos.filter((video) => video.status === 'processing');
+  if (!processing.length) {
+    badge.hidden = true;
+    return;
   }
+  badge.hidden = false;
+  badge.textContent =
+    processing.length > 1
+      ? `渲染中 ${processing.length} 个 · ${stageLabel(processing[0].progress)}`
+      : `渲染中 · ${stageLabel(processing[0].progress)}`;
+}
+
+function updateProgressBar(progress) {
+  const bar = el('video-progress');
+  const fill = el('video-fill');
+  if (!bar || !fill) return;
+  bar.hidden = false;
+  if (progress?.percent != null) {
+    bar.classList.remove('running');
+    fill.style.width = `${progress.percent}%`;
+  } else {
+    bar.classList.add('running');
+    fill.style.width = '';
+  }
+}
+
+/** Follow the job this tab submitted; other jobs are visible in the list. */
+function trackCurrent(videos) {
+  if (!currentVideoId) return;
+  const video = videos.find((item) => item.id === currentVideoId);
+  if (!video) return;
+  if (video.status === 'ready') {
+    currentVideoId = null;
+    markJob(video.id, 'ready', video.progress);
+    el('video-progress').hidden = true;
+    el('video-progress').classList.remove('running');
+    setStatus('完成', 'connected');
+    playVideo(video.id);
+    return;
+  }
+  if (video.status === 'failed' || video.status === 'error') {
+    currentVideoId = null;
+    markJob(video.id, 'failed', video.progress);
+    fail('渲染失败，详情见渲染服务日志');
+    return;
+  }
+  setStatus(`渲染中 · ${stageLabel(video.progress)}`, 'connecting');
+  updateProgressBar(video.progress);
+  el('video-progress-text').textContent = `${stageLabel(video.progress)} · 可以离开这个页签，任务在后台继续`;
+}
+
+function readJobLog() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(JOB_LOG_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((entry) => entry && entry.id).slice(0, 30) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveJobLog() {
+  try {
+    localStorage.setItem(JOB_LOG_KEY, JSON.stringify(jobLog.slice(0, 30)));
+  } catch (_) {
+    /* storage full: the log is a convenience, the server list still works */
+  }
+}
+
+function rememberJob(id) {
+  jobLog = [{ id, at: Date.now(), status: 'processing' }, ...jobLog.filter((entry) => entry.id !== id)].slice(0, 30);
+  saveJobLog();
+}
+
+function markJob(id, status, progress) {
+  const entry = jobLog.find((item) => item.id === id);
+  if (!entry) return;
+  entry.status = status;
+  entry.progress = progress || null;
+  saveJobLog();
+}
+
+async function mergeLocalJobs(serverVideos) {
+  const known = new Set(serverVideos.map((video) => video.id));
+  const extras = [];
+  let changed = false;
+  for (const entry of jobLog) {
+    if (known.has(entry.id)) continue;
+    if (entry.status === 'failed') {
+      extras.push({ id: entry.id, status: 'failed', progress: entry.progress || null, url: null });
+      continue;
+    }
+    try {
+      const response = await fetch(`/api/video/${entry.id}`);
+      if (!response.ok) continue;
+      const payload = await response.json();
+      if (!payload.status) continue;
+      extras.push({
+        id: entry.id,
+        status: payload.status,
+        progress: payload.progress || null,
+        url: payload.url || null,
+      });
+      if (entry.status !== payload.status) {
+        entry.status = payload.status;
+        entry.progress = payload.progress || null;
+        changed = true;
+      }
+    } catch (_) {
+      /* one missing status must not hide the rest of the history */
+    }
+  }
+  if (changed) saveJobLog();
+  return extras;
+}
+
+async function refreshVideos() {
+  if (!options?.enabled) return;
+  try {
+    // Plain fetch, not api(): this runs every few seconds and would otherwise
+    // flood the debug console with one line per poll.
+    const response = await fetch('/api/video');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const serverVideos = [...(payload.videos || [])].reverse();
+    const extras = await mergeLocalJobs(serverVideos);
+    lastVideos = [...extras, ...serverVideos];
+    renderHistory(lastVideos);
+    updateBadge(lastVideos);
+    trackCurrent(lastVideos);
+  } catch (error) {
+    logError('刷新短视频任务失败', { message: error.message });
+  }
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const busy = lastVideos.some((video) => video.status === 'processing');
+  pollTimer = setTimeout(async () => {
+    await refreshVideos();
+    schedulePoll();
+  }, busy ? 3000 : 8000);
 }
 
 // ---- create ---------------------------------------------------------------
 
-function stopPolling() {
-  if (polling) {
-    clearTimeout(polling.timer);
-    polling = null;
-  }
-}
-
 function fail(text) {
-  stopPolling();
   el('video-progress').hidden = true;
   el('video-progress').classList.remove('running');
   setStatus(text, 'error');
   el('video-create').disabled = false;
-}
-
-function finish(video) {
-  stopPolling();
-  el('video-progress').hidden = true;
-  el('video-progress').classList.remove('running');
-  currentVideoId = video.id;
-  setStatus('完成', 'connected');
-  el('video-create').disabled = false;
-  playVideo(video.id);
-  loadHistory();
-}
-
-async function pollStatus(videoId, started) {
-  if (!polling || polling.id !== videoId) return;
-  if (Date.now() - started > POLL_LIMIT_MS) {
-    fail('渲染超时，去检查一下渲染服务的日志');
-    return;
-  }
-  try {
-    const response = await fetch(`/api/video/${videoId}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.status === 'ready') {
-      finish(payload);
-      return;
-    }
-    if (payload.status === 'error') {
-      fail('渲染失败，详情见渲染服务日志');
-      return;
-    }
-    const seconds = Math.round((Date.now() - started) / 1000);
-    setStatus(`渲染中… 已 ${seconds} 秒`, 'connecting');
-    el('video-progress-text').textContent = `排队/渲染中 · 已 ${seconds} 秒 · 通常 1–3 分钟`;
-  } catch (error) {
-    // A single poll failure is not fatal: the renderer may be restarting.
-    logError('轮询短视频状态失败', { message: error.message });
-  }
-  polling.timer = setTimeout(() => pollStatus(videoId, started), POLL_MS);
 }
 
 async function createVideo() {
@@ -568,7 +696,7 @@ async function createVideo() {
 
   el('video-create').disabled = true;
   el('video-progress').hidden = false;
-  el('video-progress').classList.add('running');
+  updateProgressBar(null);
   el('video-progress-text').textContent = '正在提交…';
   setStatus('提交中…', 'connecting');
   try {
@@ -591,12 +719,14 @@ async function createVideo() {
       }),
     });
     currentVideoId = payload.videoId;
-    setStatus('已提交，等待渲染', 'connecting');
+    rememberJob(payload.videoId);
+    // Deliberately re-enabled: the renderer has its own queue, and the user
+    // asked to keep working while it renders.
+    el('video-create').disabled = false;
+    setStatus('已提交，后台渲染中；可以继续做别的', 'connecting');
     el('video-progress-text').textContent = '排队中…';
-    stopPolling();
-    polling = { id: payload.videoId, timer: null };
-    pollStatus(payload.videoId, Date.now());
-    loadHistory();
+    await refreshVideos();
+    schedulePoll();
   } catch (error) {
     fail(error.message);
   }
@@ -683,6 +813,7 @@ export function init() {
   el('video-split-local').addEventListener('click', splitBySentence);
   el('video-fill-terms').addEventListener('click', fillMissingTerms);
   el('video-create').addEventListener('click', createVideo);
+  el('render-badge')?.addEventListener('click', () => document.querySelector('[data-tab="video"]')?.click());
   el('video-script').addEventListener('input', saveDraft);
   for (const id of [
     'video-voice',
@@ -701,6 +832,7 @@ export function init() {
     applyPrefill();
   });
 
+  jobLog = readJobLog();
   const draft = readDraft();
   if (draft.script) el('video-script').value = draft.script;
   if (Array.isArray(draft.scenes) && draft.scenes.length) {
@@ -721,7 +853,8 @@ export function init() {
         el('video-create').disabled = true;
       }
       fillOptions();
-      loadHistory();
+      refreshVideos();
+      schedulePoll();
       applyPrefill();
     })
     .catch((error) => {

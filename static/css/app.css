@@ -940,6 +940,23 @@ p.hint {
 
 /* ---- short video tab (tab 5) --------------------------------------------- */
 
+.render-badge { border-color: var(--accent); color: var(--accent); }
+.render-badge[hidden] { display: none; }
+
+.hprogress {
+  height: 5px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.hprogress > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 300ms linear;
+}
+
 .video-scenes { display: flex; flex-direction: column; gap: 10px; }
 
 .vscene {

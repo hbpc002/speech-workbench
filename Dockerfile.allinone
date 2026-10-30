@@ -48,12 +48,13 @@ RUN mkdir -p /opt/models \
 
 # 三个补丁：Kokoro -> 回环 TTS 桥、Whisper 中文纯文本解析、Pexels 选片前过人物
 # 过滤。它们和底部 digest 绑定，见文件头注释。
-COPY renderer/patch_dist.js renderer/patch_cjk.js renderer/patch_people.js renderer/patch_audio.js /tmp/
+COPY renderer/patch_dist.js renderer/patch_cjk.js renderer/patch_people.js renderer/patch_audio.js renderer/patch_progress.js /tmp/
 RUN cd /app \
  && node /tmp/patch_dist.js \
  && node /tmp/patch_cjk.js \
  && node /tmp/patch_people.js \
- && node /tmp/patch_audio.js
+ && node /tmp/patch_audio.js \
+ && node /tmp/patch_progress.js
 
 COPY renderer/entrypoint.sh /usr/local/bin/workbench-entrypoint
 RUN chmod +x /usr/local/bin/workbench-entrypoint
