@@ -716,7 +716,7 @@ function schedulePoll() {
   pollTimer = setTimeout(async () => {
     await refreshVideos();
     schedulePoll();
-  }, busy ? 3000 : 8000);
+  }, busy ? 1000 : 8000);
 }
 
 // ---- create ---------------------------------------------------------------
@@ -820,7 +820,12 @@ async function applyPrefill() {
     .filter((sentence) => sentence.text && sentence.pcm && sentence.pcm.length)
     .slice(0, MAX_SCENES);
 
-  if (usable.length && detail.sampleRate) {
+  // 声音复刻的预览是一整段录音；文本一长就是几十秒，Pexels 找不到那么长的
+  // 竖屏素材，渲染必失败。这种「单段长音频」退回文本拆分，用同一个
+  // model:voice 逐句合成 —— 会重新合成，但音色和记录一致。
+  const singleLong = usable.length === 1 && [...usable[0].text].length > 60;
+
+  if (usable.length && detail.sampleRate && !singleLong) {
     status.textContent = `正在载入 ${usable.length} 段记录音频…`;
     status.dataset.state = 'connecting';
     try {
@@ -843,9 +848,12 @@ async function applyPrefill() {
     return;
   }
 
-  // No samples in this record (never synthesised): fall back to the text path.
+  // No samples, or one long clip: fall back to the text path. For the long
+  // clip the same voice is re-synthesised sentence by sentence.
   saveDraft();
-  status.textContent = '来自语音记录，正在拆场景…';
+  status.textContent = singleLong
+    ? '整段录音太长，自动拆句后会用同一音色重新合成…'
+    : '来自语音记录，正在拆场景…';
   status.dataset.state = 'connecting';
   splitWithAI();
 }
