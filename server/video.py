@@ -535,7 +535,7 @@ def _tail_log(lines: int) -> list[str]:
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as handle:
-            handle.seek(max(0, size - 512 * 1024))
+            handle.seek(max(0, size - 2 * 1024 * 1024))
             data = handle.read()
     except OSError:
         return []

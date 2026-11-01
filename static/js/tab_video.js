@@ -725,7 +725,7 @@ async function mergeLocalJobs(serverVideos) {
     if (entry.status === 'failed' || entry.status === 'cancelled') {
       extras.push({
         id: entry.id,
-        status: 'failed',
+        status: entry.status,
         progress: entry.progress || null,
         url: null,
         title: entry.title || '',

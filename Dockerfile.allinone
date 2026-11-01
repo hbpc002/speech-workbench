@@ -78,6 +78,7 @@ ENV VIDEO_ENABLED=1 \
     CONCURRENCY=4 \
     VIDEO_AUDIO_BASE_URL=http://127.0.0.1:3123 \
     CAPTION_LEAD_MS=200 \
+    TMPDIR=/app/data/temp \
     PEOPLE_FILTER_ENABLED=1 \
     PEOPLE_MODEL_PATH=/opt/models/yolov8n.onnx \
     SVM_BASE_URL=http://127.0.0.1:3125 \
