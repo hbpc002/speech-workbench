@@ -193,6 +193,9 @@ app.include_router(api_tagger.router, dependencies=[Depends(require_session)])
 # ---- short video -----------------------------------------------------------
 
 app.include_router(video.router, dependencies=[Depends(require_session)])
+# 素材库 mp4/jpg、项目音频：渲染器在容器内取，无法带会话 Cookie。
+app.include_router(video.public)
+app.include_router(video.library_router, dependencies=[Depends(require_session)])
 
 
 @app.get("/media/{name}")

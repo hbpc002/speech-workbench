@@ -547,6 +547,10 @@ function historyCard(video) {
   actions.className = 'hactions';
   if (video.status === 'ready') {
     actions.append(
+      actionButton('编辑', {
+        create: document.createElement.bind(document),
+        onClick: () => editVideo(video.id),
+      }),
       actionButton('播放', {
         create: document.createElement.bind(document),
         onClick: () => playVideo(video.id),
@@ -825,6 +829,213 @@ async function cancelVideo(id) {
   }
 }
 
+// ---- 素材预览与素材库 -------------------------------------------------------
+
+let review = null;
+
+function openReview(payload, mode) {
+  review = {
+    projectId: payload.projectId,
+    title: payload.title || '',
+    config: payload.config || {},
+    mode,
+    scenes: (payload.scenes || []).map((item, index) => ({
+      index: index + 1,
+      text: item.text,
+      searchTerms: item.searchTerms || [],
+      duration: item.duration || item.audio?.duration || 0,
+      clip: item.clip || null,
+    })),
+  };
+  el('video-review-picker').hidden = true;
+  el('video-review-picker').innerHTML = '';
+  el('video-review-status').textContent =
+    mode === 'edit' ? '改完点「确认生成」会重新渲染一条新视频' : '';
+  paintReviewScenes();
+  el('video-review').showModal();
+}
+
+function paintReviewScenes() {
+  const box = el('video-review-scenes');
+  box.innerHTML = '';
+  for (const [index, scene] of review.scenes.entries()) {
+    const row = document.createElement('div');
+    row.className = 'review-scene';
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = scene.clip?.preview || '';
+    const meta = document.createElement('div');
+    meta.className = 'review-meta';
+    const title = document.createElement('div');
+    title.className = 'rtitle';
+    title.textContent = `${index + 1}. ${scene.text}`;
+    const sub = document.createElement('div');
+    sub.className = 'rsub';
+    sub.textContent = [
+      scene.clip ? `素材 ${scene.clip.id}` : '未选素材',
+      scene.clip?.duration ? `${Math.round(scene.clip.duration)} 秒` : '',
+      scene.searchTerms.join(', '),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    meta.append(title, sub);
+    const swap = actionButton('换一个', {
+      create: document.createElement.bind(document),
+      onClick: () => showPicker(index),
+    });
+    row.append(img, meta, swap);
+    box.appendChild(row);
+  }
+}
+
+async function showPicker(index) {
+  const scene = review.scenes[index];
+  const box = el('video-review-picker');
+  const status = el('video-review-status');
+  box.hidden = false;
+  box.textContent = '搜索素材中…';
+  try {
+    const params = new URLSearchParams({
+      term: (scene.searchTerms.join(',') || scene.text).slice(0, 80),
+      orientation: review.config.orientation || 'portrait',
+      duration: String(scene.duration || 10),
+      exclude: scene.clip?.id || '',
+      limit: '8',
+    });
+    const payload = await api(`/api/video/clips?${params.toString()}`);
+    box.innerHTML = '';
+    if (!(payload.clips || []).length) {
+      box.textContent = '没有更多合规素材，换个检索词试试';
+      return;
+    }
+    status.textContent = '点一个素材替换';
+    for (const clip of payload.clips) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      const img = document.createElement('img');
+      img.src = clip.preview;
+      img.loading = 'lazy';
+      const label = document.createElement('span');
+      label.textContent = `${Math.round(clip.duration || 0)} 秒${clip.source === 'library' ? ' · 库' : ''}`;
+      button.append(img, label);
+      button.addEventListener('click', () => {
+        scene.clip = clip;
+        box.hidden = true;
+        status.textContent = '已替换，确认后重新生成';
+        paintReviewScenes();
+      });
+      box.appendChild(button);
+    }
+  } catch (error) {
+    box.textContent = error.message;
+  }
+}
+
+async function renderReview() {
+  if (!review) return;
+  const status = el('video-review-status');
+  status.textContent = '提交渲染中…';
+  el('video-review-render').disabled = true;
+  try {
+    const clips = review.scenes.map((scene) => ({
+      id: scene.clip?.id || '',
+      url: scene.clip?.url || '',
+      preview: scene.clip?.preview || '',
+      duration: scene.clip?.duration || 0,
+    }));
+    if (clips.some((clip) => !clip.id)) throw new Error('还有场景没有素材');
+    const payload = await api(`/api/video/${review.projectId}/render`, {
+      method: 'POST',
+      body: JSON.stringify({ clips }),
+    });
+    currentVideoId = payload.videoId;
+    currentStartedAt = Date.now();
+    rememberJob(payload.videoId);
+    el('video-review').close();
+    review = null;
+    setStatus('已提交，后台渲染中；可以继续做别的', 'connecting');
+    el('video-progress').hidden = false;
+    updateProgressBar(null);
+    el('video-progress-text').textContent = '排队中…';
+    await refreshVideos();
+    schedulePoll();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    el('video-review-render').disabled = false;
+  }
+}
+
+async function editVideo(id) {
+  try {
+    const payload = await api(`/api/video/${id}/project`);
+    openReview(payload, 'edit');
+  } catch (error) {
+    setStatus(error.message, 'error');
+  }
+}
+
+async function openLibrary() {
+  el('video-library').showModal();
+  await loadLibrary();
+}
+
+async function loadLibrary() {
+  const box = el('video-library-list');
+  box.textContent = '加载中…';
+  try {
+    const payload = await api('/api/library');
+    const showBlacklisted = el('video-library-show-blacklisted').checked;
+    const clips = (payload.clips || []).filter((clip) => showBlacklisted || !clip.blacklisted);
+    el('video-library-count').textContent = `${clips.length} 条`;
+    box.innerHTML = '';
+    for (const clip of clips) {
+      const card = document.createElement('div');
+      card.className = `library-card${clip.blacklisted ? ' blacklisted' : ''}`;
+      const img = document.createElement('img');
+      img.src = clip.preview;
+      img.loading = 'lazy';
+      const meta = document.createElement('div');
+      meta.className = 'lmeta';
+      const line1 = document.createElement('span');
+      line1.textContent = `${Math.round(clip.duration || 0)} 秒 · 用过 ${clip.usedCount || 0} 次`;
+      const line2 = document.createElement('span');
+      line2.textContent = (clip.tags || []).join(', ') || '（无标签）';
+      meta.append(line1, line2);
+      const acts = document.createElement('div');
+      acts.className = 'lacts';
+      acts.append(
+        actionButton(clip.blacklisted ? '移出黑名单' : '黑名单', {
+          className: 'ghost',
+          create: document.createElement.bind(document),
+          onClick: async () => {
+            await api(`/api/library/${clip.id}/blacklist`, {
+              method: 'POST',
+              body: JSON.stringify({ blacklisted: !clip.blacklisted }),
+            });
+            await loadLibrary();
+          },
+        }),
+        actionButton('删除', {
+          className: 'ghost danger',
+          create: document.createElement.bind(document),
+          onClick: async () => {
+            if (!confirm(`删除素材 ${clip.id}？`)) return;
+            await api(`/api/library/${clip.id}`, { method: 'DELETE' });
+            await loadLibrary();
+          },
+        })
+      );
+      card.append(img, meta, acts);
+      box.appendChild(card);
+    }
+    if (!clips.length) box.textContent = '素材库还是空的；生成视频时下载的片段会自动进来。';
+  } catch (error) {
+    box.textContent = `素材库加载失败：${error.message}`;
+  }
+}
+
 // ---- create ---------------------------------------------------------------
 
 function fail(text) {
@@ -850,12 +1061,9 @@ async function createVideo() {
   }
 
   el('video-create').disabled = true;
-  el('video-progress').hidden = false;
-  updateProgressBar(null);
-  el('video-progress-text').textContent = '正在提交…';
-  setStatus('提交中…', 'connecting');
+  setStatus('准备素材中…', 'connecting');
   try {
-    const payload = await api('/api/video', {
+    const payload = await api('/api/video/prepare', {
       method: 'POST',
       body: JSON.stringify({
         scenes: usable.map((scene) => ({
@@ -873,16 +1081,10 @@ async function createVideo() {
         },
       }),
     });
-    currentVideoId = payload.videoId;
-    currentStartedAt = Date.now();
-    rememberJob(payload.videoId);
-    // Deliberately re-enabled: the renderer has its own queue, and the user
-    // asked to keep working while it renders.
+    openReview(payload, 'new');
     el('video-create').disabled = false;
-    setStatus('已提交，后台渲染中；可以继续做别的', 'connecting');
-    el('video-progress-text').textContent = '排队中…';
-    await refreshVideos();
-    schedulePoll();
+    setStatus('素材已准备好，预览后点「确认生成」', 'connected');
+    return;
   } catch (error) {
     fail(error.message);
   }
@@ -978,6 +1180,12 @@ export function init() {
   el('video-fill-terms').addEventListener('click', fillMissingTerms);
   el('video-create').addEventListener('click', createVideo);
   el('video-logs-open')?.addEventListener('click', () => openRenderLog());
+  el('video-library-open')?.addEventListener('click', () => openLibrary());
+  el('video-library-close')?.addEventListener('click', () => el('video-library').close());
+  el('video-library-refresh')?.addEventListener('click', () => loadLibrary());
+  el('video-library-show-blacklisted')?.addEventListener('change', () => loadLibrary());
+  el('video-review-close')?.addEventListener('click', () => el('video-review').close());
+  el('video-review-render')?.addEventListener('click', () => renderReview());
   el('video-log-close')?.addEventListener('click', () => el('video-log').close());
   el('video-log-refresh')?.addEventListener('click', () => openRenderLog());
   el('video-log-copy')?.addEventListener('click', async () => {

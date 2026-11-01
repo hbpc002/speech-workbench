@@ -23,13 +23,18 @@ import time
 from typing import Iterable
 
 import requests
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import api_voices, config, llm, redact, storage, voices
+from . import api_voices, config, library, llm, projects, redact, storage, voices
 
 router = APIRouter(prefix="/api/video", tags=["video"])
+# 渲染器/浏览器直接取文件的接口（不带会话）：素材库 mp4/jpg、项目音频。
+public = APIRouter(prefix="/api", tags=["video-public"])
+library_router = APIRouter(prefix="/api/library", tags=["library"])
 
 # 渲染器只在本机/同容器里，30 秒足够建任务和查状态；下载单独给更长的读超时。
 _CONNECT_TIMEOUT = 5.0
@@ -562,6 +567,265 @@ def _render_error(video_id: str) -> str | None:
     return fallback
 
 
+class ClipChoice(BaseModel):
+    id: str = Field(min_length=1, max_length=40)
+    url: str = Field(default="", max_length=1000)
+    preview: str = Field(default="", max_length=1000)
+    duration: float = 0
+
+
+class PreparePayload(BaseModel):
+    scenes: list[ScenePayload] = Field(min_length=1, max_length=config.VIDEO_MAX_SCENES)
+    config: RenderPayload = Field(default_factory=RenderPayload)
+
+
+class RenderDraftPayload(BaseModel):
+    clips: list[ClipChoice] = Field(default_factory=list)
+    config: RenderPayload | None = None
+
+
+@router.get("/clips")
+def clip_candidates(
+    term: str = "",
+    orientation: str = "portrait",
+    duration: float = 10.0,
+    exclude: str = "",
+    limit: int = 8,
+) -> dict:
+    terms = [item.strip() for item in term.split(",") if item.strip()]
+    if not terms:
+        raise HTTPException(status_code=400, detail="没有检索词")
+    if orientation not in config.VIDEO_ORIENTATIONS:
+        raise HTTPException(status_code=400, detail="画面方向不合法")
+    return {
+        "clips": library.candidates(
+            terms,
+            orientation,
+            max(1.0, duration),
+            limit=max(1, min(12, limit)),
+            exclude={item for item in exclude.split(",") if item},
+        )
+    }
+
+
+def _scene_clip(scene: dict, orientation: str) -> dict:
+    """Prefer a library match; fall back to Pexels (downloaded into the library)."""
+    terms = [str(term) for term in scene.get("searchTerms") or []]
+    audio = scene.get("audio") or {}
+    minimum = float(audio.get("duration") or 10)
+    clip = library.choose(terms, orientation, minimum)
+    if not clip:
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {scene['index']} 场找不到无人素材，换个检索词",
+        )
+    return clip
+
+
+@router.post("/prepare")
+def prepare_video(payload: PreparePayload) -> dict:
+    """选片 + 存项目，但先不渲染：让用户在预览里换掉不满意的素材。"""
+    voice = payload.config.voice.strip() or config.VIDEO_DEFAULT_VOICE
+    music = payload.config.music or config.VIDEO_DEFAULT_MUSIC
+    _check_choice(music, config.VIDEO_MUSIC_TAGS, "音乐")
+    _check_choice(payload.config.captionPosition, config.VIDEO_CAPTION_POSITIONS, "字幕位置")
+    _check_choice(payload.config.orientation, config.VIDEO_ORIENTATIONS, "画面方向")
+    _check_choice(payload.config.musicVolume, config.VIDEO_MUSIC_VOLUMES, "音乐音量")
+
+    project_id = projects.new_id()
+    title = ""
+    scenes = []
+    for index, scene in enumerate(payload.scenes, start=1):
+        text = strip_known_tags(scene.text).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="每一场都需要文本")
+        terms = [term.strip()[:60] for term in scene.searchTerms if term.strip()][:_MAX_SEARCH_TERMS]
+        audio = None
+        if scene.audioToken:
+            if not re.fullmatch(r"[a-f0-9]{32}\.wav", scene.audioToken):
+                raise HTTPException(status_code=400, detail="音频 token 不合法")
+            stored = storage.read_local(scene.audioToken)
+            info = api_voices._wav_info(stored) if stored else None
+            if info is None or info[4] <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="这段音频已过期，请从语音记录重新点「生成视频」",
+                )
+            projects.write_audio(project_id, index, stored or b"")
+            audio = {"index": index, "duration": round(info[4], 3)}
+
+        scene_data = {"index": index, "text": text, "searchTerms": terms, "audio": audio}
+        clip = _scene_clip(scene_data, payload.config.orientation)
+        scene_data["clip"] = {
+            "id": str(clip["id"]),
+            "duration": clip.get("duration") or 0,
+            "preview": library.local_thumb_url(str(clip["id"])),
+        }
+        if not title:
+            title = text[:28] + ("…" if len(text) > 28 else "")
+        scenes.append(scene_data)
+
+    project = {
+        "id": project_id,
+        "title": title,
+        "createdAt": int(time.time() * 1000),
+        "config": {
+            "voice": voice,
+            "music": music,
+            "musicVolume": payload.config.musicVolume,
+            "captionPosition": payload.config.captionPosition,
+            "orientation": payload.config.orientation,
+            "paddingBack": payload.config.paddingBack,
+        },
+        "scenes": scenes,
+        "videoIds": [],
+    }
+    projects.save(project)
+    return {
+        "projectId": project_id,
+        "title": title,
+        "scenes": [
+            {
+                "index": item["index"],
+                "text": item["text"],
+                "searchTerms": item["searchTerms"],
+                "duration": (item.get("audio") or {}).get("duration") or 0,
+                "clip": item["clip"],
+            }
+            for item in scenes
+        ],
+        "config": project["config"],
+    }
+
+
+def _pexels_clip_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "videos.pexels.com" or host.endswith(".pexels.com")
+
+
+@router.post("/{project_id}/render")
+def render_draft(project_id: str, payload: RenderDraftPayload) -> dict:
+    if not re.fullmatch(projects.ID_RE, project_id):
+        raise HTTPException(status_code=400, detail="项目 id 不合法")
+    project = projects.load(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    config_data = project.get("config") or {}
+    if payload.config:
+        config_data = {
+            **config_data,
+            **{
+                key: value
+                for key, value in payload.config.model_dump().items()
+                if value not in (None, "")
+            },
+        }
+        project["config"] = config_data
+
+    choices = {index: clip for index, clip in enumerate(payload.clips, start=1)}
+    scenes = []
+    used_clips = []
+    for item in project.get("scenes") or []:
+        index = item["index"]
+        clip_id = (item.get("clip") or {}).get("id")
+        choice = choices.get(index)
+        if choice:
+            if choice.url:
+                if not _pexels_clip_url(choice.url):
+                    raise HTTPException(status_code=400, detail="素材地址不合法")
+                meta = library.ensure(
+                    {
+                        "id": choice.id,
+                        "url": choice.url,
+                        "preview": choice.preview,
+                        "duration": choice.duration,
+                        "orientation": config_data.get("orientation"),
+                    },
+                    tags=item.get("searchTerms") or [],
+                )
+                if not meta:
+                    raise HTTPException(status_code=400, detail="素材下载失败")
+            else:
+                meta = library._load(choice.id)  # noqa: SLF001 - same package
+                if not meta:
+                    raise HTTPException(status_code=400, detail="素材不在库里")
+            clip_id = str(meta["id"])
+            item["clip"] = {
+                "id": clip_id,
+                "duration": meta.get("duration") or 0,
+                "preview": library.local_thumb_url(clip_id),
+            }
+        if not clip_id:
+            raise HTTPException(status_code=400, detail="有场景还没选素材")
+
+        scene = {
+            "text": item["text"],
+            "searchTerms": item.get("searchTerms") or [],
+            "videoId": clip_id,
+            "videoUrl": library.local_video_url(clip_id),
+        }
+        if item.get("audio"):
+            scene["audioUrl"] = (
+                f"{config.VIDEO_AUDIO_BASE_URL}/api/video/projects/{project_id}/audio/{index}.wav"
+            )
+            scene["audioDuration"] = item["audio"].get("duration") or 0
+        scenes.append(scene)
+        used_clips.append(clip_id)
+
+    body = {
+        "scenes": scenes,
+        "config": {
+            "voice": config_data.get("voice") or config.VIDEO_DEFAULT_VOICE,
+            "music": config_data.get("music") or config.VIDEO_DEFAULT_MUSIC,
+            "captionPosition": config_data.get("captionPosition") or "bottom",
+            "orientation": config_data.get("orientation") or "portrait",
+            "musicVolume": config_data.get("musicVolume") or "low",
+            "paddingBack": config_data.get("paddingBack", 1500),
+        },
+    }
+    response = _request("POST", "/api/short-video", json=body)
+    if response.status_code not in (200, 201):
+        _fail(response)
+    data = _json(response)
+    video_id = data.get("videoId") or data.get("id")
+    if not video_id:
+        raise HTTPException(status_code=502, detail="渲染服务没有返回任务 id")
+
+    _write_meta(
+        str(video_id),
+        {
+            "title": project.get("title") or "",
+            "createdAt": int(time.time() * 1000),
+            "scenes": len(scenes),
+            "projectId": project_id,
+        },
+    )
+    project.setdefault("videoIds", []).append(str(video_id))
+    projects.save(project)
+    for clip_id in used_clips:
+        library.mark_used(clip_id)
+    return {"videoId": video_id, "projectId": project_id}
+
+
+@router.get("/{video_id}/project")
+def video_project(video_id: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
+        raise HTTPException(status_code=400, detail="任务 id 不合法")
+    meta = _read_meta(video_id)
+    project = projects.load(str(meta.get("projectId") or "")) if meta.get("projectId") else None
+    if not project:
+        raise HTTPException(status_code=404, detail="这条视频没有可编辑的项目")
+    return {
+        "projectId": project["id"],
+        "title": project.get("title") or "",
+        "config": project.get("config") or {},
+        "scenes": project.get("scenes") or [],
+    }
+
+
 @router.get("/logs")
 def render_logs(lines: int = 200) -> dict:
     count = max(1, min(500, lines))
@@ -724,3 +988,68 @@ def video_file(video_id: str) -> StreamingResponse:
         media_type=upstream.headers.get("content-type") or "video/mp4",
         headers=headers,
     )
+
+
+# ---- 公开文件（渲染器/浏览器直接用，不带会话） --------------------------------
+
+
+class BlacklistPayload(BaseModel):
+    blacklisted: bool = True
+
+
+@library_router.get("")
+def list_library() -> dict:
+    return {
+        "clips": [
+            {
+                "id": clip.get("id"),
+                "preview": library.local_thumb_url(str(clip.get("id"))),
+                "duration": clip.get("duration"),
+                "orientation": clip.get("orientation"),
+                "tags": clip.get("tags") or [],
+                "usedCount": clip.get("usedCount") or 0,
+                "blacklisted": bool(clip.get("blacklisted")),
+                "addedAt": clip.get("addedAt"),
+            }
+            for clip in library.all_clips()
+        ]
+    }
+
+
+@library_router.post("/{clip_id}/blacklist")
+def blacklist_clip(clip_id: str, payload: BlacklistPayload) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", clip_id):
+        raise HTTPException(status_code=400, detail="素材 id 不合法")
+    if library.set_blacklist(clip_id, payload.blacklisted) is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    return {"ok": True}
+
+
+@library_router.delete("/{clip_id}")
+def delete_clip(clip_id: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", clip_id):
+        raise HTTPException(status_code=400, detail="素材 id 不合法")
+    if not library.delete(clip_id):
+        raise HTTPException(status_code=404, detail="素材不存在")
+    return {"ok": True}
+
+
+@public.get("/library/{name}")
+def library_file(name: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}\.(mp4|jpg)", name):
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    path = os.path.join(config.LIBRARY_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="not found")
+    media = "video/mp4" if name.endswith(".mp4") else "image/jpeg"
+    return FileResponse(path, media_type=media)
+
+
+@public.get("/video/projects/{project_id}/audio/{index}.wav")
+def project_audio(project_id: str, index: int):
+    if not re.fullmatch(projects.ID_RE, project_id):
+        raise HTTPException(status_code=400, detail="项目 id 不合法")
+    path = projects.audio_path(project_id, index)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(path, media_type="audio/wav")

@@ -118,6 +118,33 @@
     </div>
   </dialog>
 
+  <dialog id="video-review" class="modal">
+    <div class="modal-head">
+      <h2>预览素材</h2>
+      <button type="button" class="ghost" id="video-review-close">关闭</button>
+    </div>
+    <p class="muted small">确认每一场的素材；不满意的点「换一个」，选好后再生成。</p>
+    <div id="video-review-scenes" class="review-scenes"></div>
+    <div id="video-review-picker" class="review-picker" hidden></div>
+    <div class="modal-foot">
+      <button id="video-review-render" type="button">确认生成</button>
+      <span class="muted" id="video-review-status"></span>
+    </div>
+  </dialog>
+
+  <dialog id="video-library" class="modal">
+    <div class="modal-head">
+      <h2>素材库</h2>
+      <button type="button" class="ghost" id="video-library-close">关闭</button>
+    </div>
+    <div class="controls">
+      <button class="ghost" id="video-library-refresh" type="button">刷新</button>
+      <label class="inline"><input type="checkbox" id="video-library-show-blacklisted"> 显示黑名单</label>
+      <span class="muted" id="video-library-count"></span>
+    </div>
+    <div id="video-library-list" class="library-grid"></div>
+  </dialog>
+
   <dialog id="video-log" class="modal">
     <div class="modal-head">
       <h2>渲染服务日志</h2>
@@ -504,6 +531,7 @@
       <p><a class="btn-file" id="video-download" hidden download>下载视频</a></p>
 
       <h2 class="list-title">视频记录
+        <button class="ghost small-btn" id="video-library-open" type="button">素材库</button>
         <button class="ghost small-btn" id="video-logs-open" type="button">渲染日志</button>
       </h2>
       <div class="history" id="video-history"></div>
