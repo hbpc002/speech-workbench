@@ -35,6 +35,8 @@ class FakeResponse:
 def temp_meta_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VIDEO_META_DIR", str(tmp_path / "videos"))
     monkeypatch.setattr(config, "VIDEO_RENDER_LOG", str(tmp_path / "server.log"))
+    monkeypatch.setattr(config, "LIBRARY_DIR", str(tmp_path / "library"))
+    monkeypatch.setattr(config, "PROJECTS_DIR", str(tmp_path / "projects"))
 
 
 @pytest.fixture
@@ -512,3 +514,48 @@ def test_failed_status_includes_the_renderer_error(client, no_auth, monkeypatch,
     payload = client.get("/api/video/vid-9").json()
     assert payload["status"] == "failed"
     assert payload["error"] == "Failed to fetch scene.mp4"
+
+
+# ---- 素材库 ---------------------------------------------------------------
+
+
+def test_library_list_blacklist_delete(client, no_auth, tmp_path):
+    import json
+
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "1.mp4").write_bytes(b"mp4")
+    (library / "1.jpg").write_bytes(b"jpg")
+    (library / "1.json").write_text(
+        json.dumps(
+            {
+                "id": "1",
+                "duration": 10,
+                "tags": ["blue abstract"],
+                "orientation": "portrait",
+                "usedCount": 2,
+                "blacklisted": False,
+                "addedAt": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = client.get("/api/library").json()
+    assert [clip["id"] for clip in payload["clips"]] == ["1"]
+    assert payload["clips"][0]["usedCount"] == 2
+
+    assert client.get("/api/library/1.jpg").status_code == 200
+    assert client.get("/api/library/1.mp4").status_code == 200
+
+    assert client.post("/api/library/1/blacklist", json={"blacklisted": True}).status_code == 200
+    assert json.loads((library / "1.json").read_text(encoding="utf-8"))["blacklisted"] is True
+
+    assert client.delete("/api/library/1").status_code == 200
+    assert not (library / "1.mp4").exists()
+    assert not (library / "1.json").exists()
+
+
+def test_library_rejects_bad_names(client, no_auth):
+    assert client.get("/api/library/..%2Fetc%2Fpasswd").status_code in (400, 404)
+    assert client.delete("/api/library/..%2Fetc").status_code in (400, 404)
