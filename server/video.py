@@ -530,6 +530,44 @@ def list_videos() -> dict:
     }
 
 
+def _tail_log(lines: int) -> list[str]:
+    path = config.VIDEO_RENDER_LOG
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - 512 * 1024))
+            data = handle.read()
+    except OSError:
+        return []
+    text = data.decode("utf-8", "replace")
+    return [redact.scrub(row)[:2000] for row in text.splitlines()[-lines:]]
+
+
+def _render_error(video_id: str) -> str | None:
+    """最近一条属于这个任务的渲染错误，没有就退回最后一条 error。"""
+    fallback = None
+    for line in reversed(_tail_log(2000)):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("level") != "error":
+            continue
+        message = (entry.get("err") or {}).get("message") or entry.get("msg") or ""
+        message = str(message)
+        if video_id in line:
+            return message[:500]
+        if fallback is None:
+            fallback = message[:500]
+    return fallback
+
+
+@router.get("/logs")
+def render_logs(lines: int = 200) -> dict:
+    count = max(1, min(500, lines))
+    return {"lines": _tail_log(count)}
+
+
 @router.get("/{video_id}")
 def video_status(video_id: str) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
@@ -545,6 +583,7 @@ def video_status(video_id: str) -> dict:
             "id": video_id,
             "status": status,
             "progress": payload.get("progress"),
+            "error": _render_error(video_id) if status in ("failed", "error") else None,
             "url": f"/api/video/{video_id}/file" if status == "ready" else None,
         },
     )
@@ -635,6 +674,18 @@ def _stream(source: Iterable[bytes]):
         close = getattr(source, "close", None)
         if callable(close):
             close()
+
+
+@router.post("/{video_id}/cancel")
+def cancel_video(video_id: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
+        raise HTTPException(status_code=400, detail="任务 id 不合法")
+    response = _request("POST", f"/api/short-video/{video_id}/cancel")
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="任务已经结束，无法取消")
+    if not response.ok:
+        _fail(response)
+    return {"ok": True}
 
 
 @router.get("/{video_id}/file")

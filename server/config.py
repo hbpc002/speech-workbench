@@ -360,6 +360,8 @@ VIDEO_TIMEOUT_SECONDS = _env_float("VIDEO_TIMEOUT_SECONDS", default=30.0)
 VIDEO_AUDIO_BASE_URL = _env("VIDEO_AUDIO_BASE_URL", default="http://127.0.0.1:3123").rstrip("/")
 # 成片目录。渲染器把 mp4 写这里；工作台在旁边写 {id}.json 记标题和时间。
 VIDEO_META_DIR = _env("VIDEO_META_DIR", default="/app/data/videos")
+# 渲染器的 stdout/stderr；入口脚本重定向到 /app/server.log。同容器可读。
+VIDEO_RENDER_LOG = _env("VIDEO_RENDER_LOG", default="/app/server.log")
 VIDEO_AUDIO_MAX_BYTES = max(1_000_000, _env_int("VIDEO_AUDIO_MAX_BYTES", default=50 * 1024 * 1024))
 VIDEO_FILE_TIMEOUT_SECONDS = _env_float("VIDEO_FILE_TIMEOUT_SECONDS", default=120.0)
 VIDEO_DEFAULT_VOICE = _env("VIDEO_DEFAULT_VOICE", default=TTS_VOICE)

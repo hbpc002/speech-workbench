@@ -991,6 +991,22 @@ p.hint {
 .vscene-text { min-height: 54px; }
 .vscene-terms { font-size: 13px; }
 
+.small-btn { padding: 2px 10px; font-size: 12px; font-weight: 400; margin-left: 8px; }
+
+.render-log {
+  margin: 0 0 10px;
+  padding: 10px;
+  max-height: 52vh;
+  overflow: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 #video-disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius);

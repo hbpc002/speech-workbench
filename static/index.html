@@ -118,6 +118,19 @@
     </div>
   </dialog>
 
+  <dialog id="video-log" class="modal">
+    <div class="modal-head">
+      <h2>渲染服务日志</h2>
+      <button type="button" class="ghost" id="video-log-close">关闭</button>
+    </div>
+    <p class="muted small">最近 200 行，来自容器内的 /app/server.log。渲染失败的详细原因在这里。</p>
+    <pre id="video-log-body" class="render-log"></pre>
+    <div class="modal-foot">
+      <button id="video-log-refresh" type="button">刷新</button>
+      <button class="ghost" id="video-log-copy" type="button">复制</button>
+    </div>
+  </dialog>
+
   <dialog id="tag-help" class="modal">
     <div class="modal-head">
       <h2>让 AI 帮你写带情感标签的口播稿</h2>
@@ -490,7 +503,9 @@
       <video id="video-player" class="video-player" controls playsinline hidden></video>
       <p><a class="btn-file" id="video-download" hidden download>下载视频</a></p>
 
-      <h2 class="list-title">视频记录</h2>
+      <h2 class="list-title">视频记录
+        <button class="ghost small-btn" id="video-logs-open" type="button">渲染日志</button>
+      </h2>
       <div class="history" id="video-history"></div>
     </section>
   </main>

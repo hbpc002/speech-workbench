@@ -34,6 +34,7 @@ class FakeResponse:
 @pytest.fixture(autouse=True)
 def temp_meta_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VIDEO_META_DIR", str(tmp_path / "videos"))
+    monkeypatch.setattr(config, "VIDEO_RENDER_LOG", str(tmp_path / "server.log"))
 
 
 @pytest.fixture
@@ -122,6 +123,7 @@ def test_status_maps_url_when_ready(client, no_auth, monkeypatch):
         "id": "abc123",
         "status": "ready",
         "progress": None,
+        "error": None,
         "title": "",
         "createdAt": None,
         "tookMs": None,
@@ -454,3 +456,59 @@ def test_delete_removes_meta(client, no_auth, monkeypatch, tmp_path):
     monkeypatch.setattr(video.requests, "request", lambda *a, **k: FakeResponse(200, {"success": True}))
     assert client.delete("/api/video/vid-3").status_code == 200
     assert not meta.exists()
+
+
+def test_cancel_proxies_to_renderer(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    calls = []
+
+    def fake(method, url, **kwargs):
+        calls.append((method, url))
+        return FakeResponse(200, {"ok": True})
+
+    monkeypatch.setattr(video.requests, "request", fake)
+    response = client.post("/api/video/vid-1/cancel")
+    assert response.status_code == 200
+    assert calls == [("POST", "http://renderer.test/api/short-video/vid-1/cancel")]
+
+
+def test_cancel_finished_job_is_404(client, no_auth, monkeypatch):
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    monkeypatch.setattr(video.requests, "request", lambda *a, **k: FakeResponse(404, {"ok": False}))
+    assert client.post("/api/video/vid-1/cancel").status_code == 404
+
+
+# ---- 渲染日志 ---------------------------------------------------------------
+
+
+def test_render_logs_returns_tail(client, no_auth, tmp_path):
+    (tmp_path / "server.log").write_text(
+        "\n".join(f"line-{i}" for i in range(30)), encoding="utf-8"
+    )
+    payload = client.get("/api/video/logs?lines=5").json()
+    assert payload["lines"] == ["line-25", "line-26", "line-27", "line-28", "line-29"]
+
+
+def test_failed_status_includes_the_renderer_error(client, no_auth, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr(config, "SVM_BASE_URL", "http://renderer.test")
+    (tmp_path / "server.log").write_text(
+        json.dumps(
+            {
+                "level": "error",
+                "time": "2026-01-01T00:00:00Z",
+                "videoId": "vid-9",
+                "err": {"message": "Failed to fetch scene.mp4"},
+                "msg": "Error creating video",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        video.requests, "request", lambda *a, **k: FakeResponse(200, {"status": "failed"})
+    )
+    payload = client.get("/api/video/vid-9").json()
+    assert payload["status"] == "failed"
+    assert payload["error"] == "Failed to fetch scene.mp4"

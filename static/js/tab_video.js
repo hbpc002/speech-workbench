@@ -385,8 +385,8 @@ function shortId(id) {
 }
 
 function statusBadge(status) {
-  const labels = { ready: '完成', processing: '渲染中', failed: '失败', error: '失败' };
-  const kinds = { ready: 'ok', processing: 'warn', failed: 'err', error: 'err' };
+  const labels = { ready: '完成', processing: '渲染中', failed: '失败', error: '失败', cancelled: '已取消' };
+  const kinds = { ready: 'ok', processing: 'warn', failed: 'err', error: 'err', cancelled: 'warn' };
   const badge = document.createElement('span');
   badge.className = `hbadge ${kinds[status] || ''}`;
   badge.textContent = labels[status] || status || '未知';
@@ -436,6 +436,56 @@ function stageLabel(progress) {
   return progress.percent == null ? label : `${label} ${progress.percent}%`;
 }
 
+const reportedFailures = new Set();
+
+function formatLogLine(line) {
+  try {
+    const entry = JSON.parse(line);
+    const when = entry.time ? `${entry.time.slice(11, 19)} ` : '';
+    const level = String(entry.level || 'info').toUpperCase();
+    const message = entry.err?.message || entry.msg || '';
+    return `${when}${level} ${message}`;
+  } catch (_) {
+    return line;
+  }
+}
+
+async function openRenderLog() {
+  const body = el('video-log-body');
+  el('video-log').showModal();
+  body.textContent = '加载中…';
+  try {
+    const payload = await api('/api/video/logs?lines=200');
+    body.textContent = (payload.lines || []).map(formatLogLine).join('\n') || '（没有日志）';
+  } catch (error) {
+    body.textContent = `日志加载失败：${error.message}`;
+  }
+}
+
+async function reportRenderFailure(video) {
+  if (!video?.id || reportedFailures.has(video.id)) return;
+  reportedFailures.add(video.id);
+  const detail = video.error || '渲染失败，详情见渲染日志';
+  setStatus(`渲染失败：${detail.slice(0, 120)}`, 'error');
+  try {
+    const payload = await api('/api/video/logs?lines=400');
+    const errors = (payload.lines || [])
+      .filter((line) => {
+        try {
+          return JSON.parse(line).level === 'error';
+        } catch (_) {
+          return false;
+        }
+      })
+      .slice(-5);
+    for (const line of errors) {
+      logError(`渲染服务：${formatLogLine(line).slice(0, 500)}`, { source: 'renderer' });
+    }
+  } catch (_) {
+    /* status already points at the log button */
+  }
+}
+
 function formatDuration(ms) {
   const total = Math.max(0, Math.round(Number(ms) / 1000));
   if (total < 60) return `${total} 秒`;
@@ -477,7 +527,9 @@ function historyCard(video) {
       ? 'Pexels 素材 + 语音配音'
       : video.status === 'processing'
         ? stageLabel(video.progress)
-        : '渲染失败';
+        : video.status === 'cancelled'
+          ? '已取消'
+          : '渲染失败';
   const elapsed =
     video.status === 'processing' && video.createdAt ? Date.now() - video.createdAt : null;
   const took = video.tookMs != null ? `用时 ${formatDuration(video.tookMs)}` : '';
@@ -508,6 +560,23 @@ function historyCard(video) {
           link.download = `short-${shortId(video.id)}.mp4`;
           link.click();
         },
+      })
+    );
+  }
+  if (video.status === 'processing') {
+    actions.append(
+      actionButton('取消', {
+        className: 'ghost danger',
+        create: document.createElement.bind(document),
+        onClick: () => cancelVideo(video.id),
+      })
+    );
+  }
+  if (video.status === 'failed' || video.status === 'error') {
+    actions.append(
+      actionButton('日志', {
+        create: document.createElement.bind(document),
+        onClick: () => openRenderLog(video.id),
       })
     );
   }
@@ -602,7 +671,10 @@ function trackCurrent(videos) {
     currentVideoId = null;
     currentStartedAt = null;
     markJob(video.id, 'failed', video.progress);
-    fail('渲染失败，详情见渲染服务日志');
+    el('video-progress').hidden = true;
+    el('video-progress').classList.remove('running');
+    el('video-create').disabled = false;
+    reportRenderFailure(video);
     return;
   }
   const started = video.createdAt || currentStartedAt;
@@ -650,7 +722,7 @@ async function mergeLocalJobs(serverVideos) {
   let changed = false;
   for (const entry of jobLog) {
     if (known.has(entry.id)) continue;
-    if (entry.status === 'failed') {
+    if (entry.status === 'failed' || entry.status === 'cancelled') {
       extras.push({
         id: entry.id,
         status: 'failed',
@@ -658,6 +730,7 @@ async function mergeLocalJobs(serverVideos) {
         url: null,
         title: entry.title || '',
         createdAt: entry.createdAt || entry.at,
+        error: entry.error || '',
       });
       continue;
     }
@@ -673,6 +746,7 @@ async function mergeLocalJobs(serverVideos) {
         url: payload.url || null,
         title: payload.title || entry.title || '',
         createdAt: payload.createdAt || entry.at,
+        error: payload.error || entry.error || '',
       });
       if (entry.status !== payload.status) {
         entry.status = payload.status;
@@ -681,6 +755,7 @@ async function mergeLocalJobs(serverVideos) {
       }
       if (payload.title) entry.title = payload.title;
       if (payload.createdAt) entry.createdAt = payload.createdAt;
+      if (payload.error) entry.error = payload.error;
     } catch (_) {
       /* one missing status must not hide the rest of the history */
     }
@@ -717,6 +792,37 @@ function schedulePoll() {
     await refreshVideos();
     schedulePoll();
   }, busy ? 1000 : 8000);
+}
+
+async function cancelVideo(id) {
+  if (!confirm('取消这个渲染任务？已经渲染的部分会丢弃。')) return;
+  try {
+    await api(`/api/video/${id}/cancel`, { method: 'POST' });
+    if (!jobLog.some((entry) => entry.id === id)) {
+      const video = lastVideos.find((item) => item.id === id);
+      jobLog.unshift({
+        id,
+        at: video?.createdAt || Date.now(),
+        title: video?.title || '',
+        status: 'cancelled',
+      });
+    } else {
+      const entry = jobLog.find((item) => item.id === id);
+      entry.status = 'cancelled';
+    }
+    saveJobLog();
+    if (currentVideoId === id) {
+      currentVideoId = null;
+      currentStartedAt = null;
+      el('video-progress').hidden = true;
+      el('video-progress').classList.remove('running');
+      setStatus('已取消', '');
+    }
+    await refreshVideos();
+    schedulePoll();
+  } catch (error) {
+    setStatus(error.message, 'error');
+  }
 }
 
 // ---- create ---------------------------------------------------------------
@@ -871,6 +977,18 @@ export function init() {
   el('video-split-local').addEventListener('click', splitBySentence);
   el('video-fill-terms').addEventListener('click', fillMissingTerms);
   el('video-create').addEventListener('click', createVideo);
+  el('video-logs-open')?.addEventListener('click', () => openRenderLog());
+  el('video-log-close')?.addEventListener('click', () => el('video-log').close());
+  el('video-log-refresh')?.addEventListener('click', () => openRenderLog());
+  el('video-log-copy')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(el('video-log-body').textContent || '');
+      el('video-log-copy').textContent = '已复制';
+      setTimeout(() => (el('video-log-copy').textContent = '复制'), 1500);
+    } catch (_) {
+      /* clipboard permission is not worth an error banner */
+    }
+  });
   el('render-badge')?.addEventListener('click', () => document.querySelector('[data-tab="video"]')?.click());
   el('video-script').addEventListener('input', saveDraft);
   for (const id of [
